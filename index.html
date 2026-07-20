@@ -1432,12 +1432,17 @@ tr.row-new { animation: highlight-row 1.6s ease-out; }
       headers: { ...(options.headers || {}), Authorization: `Bearer ${accessToken || ""}` },
     });
 
+    // Google's API returns 401 for a missing/expired token in most cases,
+    // but has also been observed returning 403 for the same "no valid
+    // credentials" situation (an empty/placeholder Authorization header is
+    // not always distinguishable from a permissions problem on their end)
+    // — so both trigger the same silent-refresh-then-reconnect handling.
     let res = await doFetch();
-    if (res.status === 401) {
+    if (res.status === 401 || res.status === 403) {
       const refreshed = await silentTokenRefresh();
       if (refreshed) res = await doFetch();
     }
-    if (res.status === 401) {
+    if (res.status === 401 || res.status === 403) {
       showConnectionBanner("Google connection expired.", "Reconnect to Google", onReconnectClick);
       throw authFailureError("Google session expired. Please reconnect.");
     }
@@ -1460,13 +1465,13 @@ tr.row-new { animation: highlight-row 1.6s ease-out; }
       body: JSON.stringify({ properties: { title: "Travel Expenses" } }),
     });
     let res = await doCreate();
-    if (res.status === 401) {
+    if (res.status === 401 || res.status === 403) {
       const refreshed = await silentTokenRefresh();
       if (refreshed) res = await doCreate();
     }
     const body = await res.json().catch(() => null);
     if (!res.ok) {
-      if (res.status === 401) throw authFailureError("Google session expired. Please reconnect.");
+      if (res.status === 401 || res.status === 403) throw authFailureError("Google session expired. Please reconnect.");
       throw new Error((body && body.error && body.error.message) || `Request failed (${res.status})`);
     }
     return body.spreadsheetId;
@@ -1827,6 +1832,25 @@ tr.row-new { animation: highlight-row 1.6s ease-out; }
       el("setup-gate").hidden = false;
       return;
     }
+
+    // A page refresh always starts with accessToken === null — it's
+    // intentionally never persisted — so the very first thing done with a
+    // known spreadsheet id is to try to obtain a token *before* any Sheets
+    // API call fires. prompt: "" asks silently, with no popup, and
+    // succeeds with no user action as long as they're still signed in to
+    // Google in this browser and have already granted this app consent.
+    const gotToken = await requestToken("");
+    if (!gotToken) {
+      // No popup was shown (silent request just came back empty) — the
+      // user needs to click through an interactive sign-in instead of
+      // staring at an empty/broken dashboard.
+      showConnectionBanner("Sign in to load your trips.", "Sign in with Google", onInitialSignInClick);
+      return;
+    }
+    await loadTripsAfterAuth();
+  }
+
+  async function loadTripsAfterAuth() {
     try {
       await refreshTripList();
     } catch (err) {
@@ -1836,6 +1860,22 @@ tr.row-new { animation: highlight-row 1.6s ease-out; }
       if (!err.authFailure) {
         showConnectionBanner(err.message || "Could not load your spreadsheet.", "Disconnect", onDisconnectClick);
       }
+    }
+  }
+
+  async function onInitialSignInClick() {
+    const btn = el("connection-banner-btn");
+    btn.disabled = true;
+    try {
+      const ok = await requestToken("consent");
+      if (ok) {
+        hideConnectionBanner();
+        await loadTripsAfterAuth();
+      }
+    } catch (err) {
+      // leave the banner up — the user can just try the button again
+    } finally {
+      btn.disabled = false;
     }
   }
 
@@ -2617,7 +2657,7 @@ tr.row-new { animation: highlight-row 1.6s ease-out; }
       const ok = await requestToken("consent");
       if (ok) {
         hideConnectionBanner();
-        await refreshTripList();
+        await loadTripsAfterAuth();
       }
     } catch (err) {
       // leave the banner up — the user can just try the button again
