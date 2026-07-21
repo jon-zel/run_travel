@@ -1,15 +1,22 @@
 <!--
 GOOGLE CLOUD SETUP — one-time, before first deploy of this file:
   1. Go to https://console.cloud.google.com/ and create a project (or reuse one).
-  2. APIs & Services > Library > enable "Google Sheets API".
+  2. APIs & Services > Library > enable "Google Sheets API" AND "Google Drive API"
+     (Drive API is only used read-only, to find this app's spreadsheet by name after
+     sign-in — see findDefaultSpreadsheet() below).
   3. APIs & Services > OAuth consent screen: User type "External", Publishing status
      "Testing", and add your own Google account under "Test users" (Testing-mode apps
      only let listed test users sign in — that's fine for a personal app).
   4. APIs & Services > Credentials > Create Credentials > OAuth client ID >
      Application type "Web application".
-     - Authorized JavaScript origins: add "https://<your-username>.github.io"
-       (and "http://localhost:PORT" for local testing, if you serve this file locally).
-     - No redirect URI needed (this uses the token model, not the code model).
+     - Authorized redirect URIs: add the *exact* URL this file is served at, including
+       the trailing path — e.g. "https://<your-username>.github.io/travel-expenses/
+       static-gsheets/" for GitHub Pages, and "http://localhost:8000/" for local
+       testing. Must match exactly (scheme, host, port, path) or sign-in will fail.
+       (This app redirects the whole page to Google and back for sign-in — not a
+       pop-up — specifically because pop-ups have no reliable "allow" recourse on iOS
+       Safari. Authorized JavaScript origins isn't used by this flow, but leaving one
+       configured from an earlier setup doesn't hurt anything.)
   5. Copy the generated Client ID into CLIENT_ID below.
   This is a static site with no server, so there is no client secret involved anywhere.
 -->
@@ -796,6 +803,7 @@ tr.row-new { animation: highlight-row 1.6s ease-out; }
 .setup-connect-fields { margin-top: var(--sp-6); }
 .setup-connect-fields .modal-field { max-width: 420px; margin: 0 auto var(--sp-4); text-align: left; }
 .setup-connect-fields .field-error { text-align: center; }
+#setup-error { text-align: center; }
 .setup-connect-fields .setup-actions {
   display: flex; gap: var(--sp-3); justify-content: center; flex-wrap: wrap; margin-top: var(--sp-3);
 }
@@ -864,16 +872,26 @@ tr.row-new { animation: highlight-row 1.6s ease-out; }
        no spreadsheet is connected yet (localStorage has no spreadsheet id). -->
   <section id="setup-gate" class="empty-state" hidden>
     <h2>Connect Google Sheets</h2>
-    <p>Sign in with Google, then connect a spreadsheet to store your trips in.</p>
+    <p>Sign in with Google. If you already have a "Travel Expenses" spreadsheet, you'll be connected to it automatically — otherwise you'll be able to create one or connect a different sheet.</p>
     <div class="setup-signin-row">
       <button id="setup-signin-btn" class="btn btn-primary">Sign in with Google</button>
     </div>
+    <!-- Deliberately OUTSIDE #setup-connect-fields (which stays hidden
+         until sign-in succeeds) — a sign-in failure message written into
+         a still-hidden container is invisible, which is exactly the bug
+         this fixes: the error existed in the DOM but nothing was ever
+         drawn on screen. This element is visible any time #setup-gate
+         itself is, regardless of which step failed. -->
+    <div id="setup-error" class="field-error"></div>
+    <span id="setup-signin-checking" class="saving-indicator" style="display:flex; justify-content:center; margin-top: var(--sp-4);" hidden>
+      <span class="spinner"></span> Looking for your existing spreadsheet…
+    </span>
     <div id="setup-connect-fields" class="setup-connect-fields" hidden>
+      <p class="modal-hint" style="text-align:center;">No "Travel Expenses" spreadsheet found on this Google account. Connect one below — once connected, this becomes your default (use "Disconnect Google Sheets" at the bottom of the app to switch to a different one later).</p>
       <div class="modal-field">
         <label for="setup-sheet-url">Google Sheets URL</label>
         <input type="text" id="setup-sheet-url" placeholder="https://docs.google.com/spreadsheets/d/...">
       </div>
-      <div id="setup-error" class="field-error"></div>
       <div class="setup-actions">
         <button id="setup-connect-btn" class="btn btn-secondary">Connect</button>
         <span class="setup-or">or</span>
@@ -936,6 +954,7 @@ tr.row-new { animation: highlight-row 1.6s ease-out; }
           <span id="note-saved-hint" class="note-saved-hint">Saved</span>
         </div>
         <textarea id="trip-note-input" class="trip-note-input" dir="auto" placeholder="Write a note for this trip…"></textarea>
+        <div id="note-error" class="field-error"></div>
       </div>
     </section>
 
@@ -997,6 +1016,10 @@ tr.row-new { animation: highlight-row 1.6s ease-out; }
     <div class="modal-field">
       <label for="new-trip-name">Trip name</label>
       <input type="text" id="new-trip-name" placeholder="e.g. Greece 2026">
+    </div>
+    <div class="modal-field">
+      <label for="new-trip-currency">Trip currency</label>
+      <select id="new-trip-currency"></select>
     </div>
     <div id="new-trip-error" class="field-error"></div>
     <div class="modal-actions">
@@ -1092,7 +1115,6 @@ tr.row-new { animation: highlight-row 1.6s ease-out; }
   </div>
 </div>
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js"></script>
-<script src="https://accounts.google.com/gsi/client"></script>
 <script>
 /* Custom date input — replaces native <input type="date">.
  *
@@ -1356,50 +1378,90 @@ tr.row-new { animation: highlight-row 1.6s ease-out; }
   // secret — this is a static site).
   // ============================================================
   const CLIENT_ID = '1065291210789-1if7o28onefirphe5n92r2jl0l5crg3f.apps.googleusercontent.com';
-  const SHEETS_SCOPE = "https://www.googleapis.com/auth/spreadsheets";
+  // drive.metadata.readonly is only used to search for the app's default
+  // spreadsheet by name after sign-in (read-only file *metadata* — titles/
+  // ids/timestamps — never file contents of anything outside this app's
+  // own sheet). All actual reads/writes still go through the spreadsheets
+  // scope alone.
+  const SHEETS_SCOPE = "https://www.googleapis.com/auth/spreadsheets https://www.googleapis.com/auth/drive.metadata.readonly";
   const REQUIRED_HEADERS = ["Date", "Amount", "Category", "Notes"];
   const SPREADSHEET_ID_KEY = "travel_expenses_spreadsheet_id";
+  // The canonical name this app looks for right after sign-in, and the
+  // same name "Create a spreadsheet for me" already uses — so a
+  // spreadsheet created by this app on one device is auto-discovered on
+  // any other device signed in to the same Google account.
+  const DEFAULT_SPREADSHEET_TITLE = "Travel Expenses";
 
-  let tokenClient = null;
+  // A single reserved sheet tab (not a per-trip tab) holding one row per
+  // trip: its note and its base currency. Its own header row never
+  // matches REQUIRED_HEADERS, so getTrips()'s existing header-check
+  // already keeps it out of the trip list with no special-casing needed.
+  const METADATA_SHEET_NAME = "_Metadata";
+  const METADATA_HEADERS = ["Trip Name", "Notes", "Currency"];
+
+  function isReservedTripName(name) {
+    return (name || "").trim().toLowerCase() === METADATA_SHEET_NAME.toLowerCase();
+  }
+
   let accessToken = null;        // in-memory only — never persisted
-  let pendingTokenResolve = null;
-  let refreshInFlight = null;
   let spreadsheetId = localStorage.getItem(SPREADSHEET_ID_KEY);
   const tripHeaderMapCache = {}; // trip name -> { headerName: columnIndex }
 
-  function initGoogleAuth() {
-    tokenClient = google.accounts.oauth2.initTokenClient({
+  // ---- Auth: full-page redirect, not a pop-up ----
+  //
+  // This app originally used Google Identity Services' pop-up token model
+  // (google.accounts.oauth2.initTokenClient). That works fine on desktop
+  // but iOS Safari has no reliable in-page way to grant pop-up access mid-
+  // flow (unlike desktop Chrome's address-bar icon) — a blocked pop-up on
+  // iPhone was a dead end with no recourse. A top-level redirect to
+  // Google's own authorize endpoint isn't a pop-up at all, so it can't be
+  // blocked the same way, and works identically across every browser.
+  //
+  // response_type=token is the OAuth 2.0 implicit flow for client-side-
+  // only apps (see Google's "OAuth 2.0 for Client-side Web Applications"
+  // guide) — appropriate here specifically because this is a static site
+  // with no backend to exchange an authorization code for a token.
+  const SILENT_ATTEMPTED_KEY = "travel_expenses_silent_auth_attempted"; // sessionStorage — prevents an infinite silent-redirect loop within one tab session
+
+  function computeRedirectUri() {
+    return location.origin + location.pathname;
+  }
+
+  function redirectToGoogle(promptMode) {
+    savePendingFormState(); // the whole page is about to unload — preserve any in-progress form first
+    const params = new URLSearchParams({
       client_id: CLIENT_ID,
+      redirect_uri: computeRedirectUri(),
+      response_type: "token",
       scope: SHEETS_SCOPE,
-      callback: (resp) => {
-        if (resp && resp.access_token) {
-          accessToken = resp.access_token;
-          hideConnectionBanner();
-        }
-        if (pendingTokenResolve) {
-          const resolve = pendingTokenResolve;
-          pendingTokenResolve = null;
-          resolve(!!(resp && resp.access_token));
-        }
-      },
+      include_granted_scopes: "true",
+      prompt: promptMode, // "consent" for an explicit Sign in/Reconnect click, "none" for the once-per-tab silent attempt
     });
+    location.assign(`https://accounts.google.com/o/oauth2/v2/auth?${params.toString()}`);
   }
 
-  // Wraps a single requestAccessToken() call in a promise resolved by the
-  // tokenClient's one shared callback above (GIS supports only one
-  // callback per client, so every caller — sign-in button, reconnect
-  // button, silent 401 refresh — goes through this same choke point).
-  function requestToken(promptMode) {
-    return new Promise((resolve) => {
-      pendingTokenResolve = resolve;
-      tokenClient.requestAccessToken({ prompt: promptMode });
-    });
+  function beginGoogleSignIn() {
+    redirectToGoogle("consent");
   }
 
-  function silentTokenRefresh() {
-    if (refreshInFlight) return refreshInFlight;
-    refreshInFlight = requestToken("").finally(() => { refreshInFlight = null; });
-    return refreshInFlight;
+  // Reads the access token (or error) out of the URL fragment Google
+  // redirects back with, and immediately strips it from the address bar —
+  // a bearer token has no business sitting in the URL/history/bookmarks
+  // a moment longer than it takes to read it into memory.
+  function consumeAuthRedirectResult() {
+    if (!location.hash) return null;
+    const params = new URLSearchParams(location.hash.slice(1));
+    const token = params.get("access_token");
+    const error = params.get("error");
+    if (!token && !error) return null; // a hash present for some other reason — not ours
+    history.replaceState(null, "", location.pathname + location.search);
+    if (token) return { token };
+    return { error: error || "access_denied" };
+  }
+
+  function describeAuthError(code) {
+    if (code === "access_denied") return "Sign-in was cancelled.";
+    return `Sign-in failed (${code}).`;
   }
 
   function authFailureError(message) {
@@ -1434,14 +1496,14 @@ tr.row-new { animation: highlight-row 1.6s ease-out; }
 
     // Google's API returns 401 for a missing/expired token in most cases,
     // but has also been observed returning 403 for the same "no valid
-    // credentials" situation (an empty/placeholder Authorization header is
-    // not always distinguishable from a permissions problem on their end)
-    // — so both trigger the same silent-refresh-then-reconnect handling.
-    let res = await doFetch();
-    if (res.status === 401 || res.status === 403) {
-      const refreshed = await silentTokenRefresh();
-      if (refreshed) res = await doFetch();
-    }
+    // credentials" situation. Either way, there's no in-page silent retry
+    // anymore (that was the pop-up model's job) — refreshing a token now
+    // means a full-page redirect, which is too disruptive to fire
+    // automatically out from under a user who's mid-action. Straight to
+    // the reconnect banner; savePendingFormState() (inside
+    // redirectToGoogle, called when they click it) preserves whatever
+    // they were doing across the round-trip.
+    const res = await doFetch();
     if (res.status === 401 || res.status === 403) {
       showConnectionBanner("Google connection expired.", "Reconnect to Google", onReconnectClick);
       throw authFailureError("Google session expired. Please reconnect.");
@@ -1456,25 +1518,51 @@ tr.row-new { animation: highlight-row 1.6s ease-out; }
     return body;
   }
 
-  const sheetsGet = (path) => sheetsFetch(sheetsSpreadsheetUrl(path), { method: "GET" });
+  const sheetsGet = (path, extra) => sheetsFetch(sheetsSpreadsheetUrl(path), { method: "GET", ...(extra || {}) });
 
   async function createSpreadsheet() {
     const doCreate = () => fetch("https://sheets.googleapis.com/v4/spreadsheets", {
       method: "POST",
       headers: { Authorization: `Bearer ${accessToken || ""}`, "Content-Type": "application/json" },
-      body: JSON.stringify({ properties: { title: "Travel Expenses" } }),
+      body: JSON.stringify({ properties: { title: DEFAULT_SPREADSHEET_TITLE } }),
     });
-    let res = await doCreate();
+    const res = await doCreate();
     if (res.status === 401 || res.status === 403) {
-      const refreshed = await silentTokenRefresh();
-      if (refreshed) res = await doCreate();
+      showConnectionBanner("Google connection expired.", "Reconnect to Google", onReconnectClick);
+      throw authFailureError("Google session expired. Please reconnect.");
     }
     const body = await res.json().catch(() => null);
     if (!res.ok) {
-      if (res.status === 401 || res.status === 403) throw authFailureError("Google session expired. Please reconnect.");
       throw new Error((body && body.error && body.error.message) || `Request failed (${res.status})`);
     }
     return body.spreadsheetId;
+  }
+
+  // Looks up this app's own spreadsheet by its canonical name right after
+  // sign-in, via Drive's file search (the Sheets API itself has no "list
+  // my spreadsheets" endpoint) — lets a returning user, or a fresh device
+  // already signed in to the same Google account, connect straight to
+  // their existing data with nothing to paste. Returns null (not a thrown
+  // error) on anything ambiguous or unavailable, so the caller always has
+  // a safe fallback: show the manual "paste a URL / create one" chooser.
+  async function findDefaultSpreadsheet() {
+    const q = encodeURIComponent(
+      `name = '${DEFAULT_SPREADSHEET_TITLE.replace(/'/g, "\\'")}' and mimeType = 'application/vnd.google-apps.spreadsheet' and trashed = false`
+    );
+    const fields = encodeURIComponent("files(id,name,modifiedTime)");
+    const doList = () => fetch(
+      `https://www.googleapis.com/drive/v3/files?q=${q}&fields=${fields}&orderBy=modifiedTime desc`,
+      { headers: { Authorization: `Bearer ${accessToken || ""}` } }
+    );
+    const res = await doList();
+    if (!res.ok) return null; // 401/403 (no in-page retry anymore — see sheetsFetch), Drive API not enabled, scope not granted, network hiccup, etc. — fail open into the manual chooser
+    const body = await res.json().catch(() => null);
+    const files = (body && body.files) || [];
+    if (files.length === 1) return files[0].id;
+    // Zero matches: no default exists yet. More than one: ambiguous — in
+    // both cases the manual chooser is the safer path (never guess which
+    // spreadsheet to silently start writing expenses into).
+    return null;
   }
 
   function extractSpreadsheetId(input) {
@@ -1493,8 +1581,8 @@ tr.row-new { animation: highlight-row 1.6s ease-out; }
     return map;
   }
 
-  function missingHeaders(map) {
-    return REQUIRED_HEADERS.filter((h) => !(h in map));
+  function missingHeaders(map, required) {
+    return (required || REQUIRED_HEADERS).filter((h) => !(h in map));
   }
 
   async function getTripHeaderMap(trip, forceRefresh) {
@@ -1544,7 +1632,10 @@ tr.row-new { animation: highlight-row 1.6s ease-out; }
     return { trips };
   }
 
-  async function createTripApi(name) {
+  async function createTripApi(name, currency) {
+    if (isReservedTripName(name)) {
+      throw new Error(`'${name}' is a reserved name — choose a different trip name.`);
+    }
     const meta = await sheetsGet("?fields=" + encodeURIComponent("sheets.properties.title"));
     const titles = (meta.sheets || []).map((s) => s.properties.title);
     if (titles.includes(name)) {
@@ -1568,7 +1659,129 @@ tr.row-new { animation: highlight-row 1.6s ease-out; }
     });
 
     tripHeaderMapCache[name] = { Date: 0, Amount: 1, Category: 2, Notes: 3 };
+
+    // Trip names are already guaranteed unique above, so this is always a
+    // fresh append inside upsertMetadataRow, never the same-row update path.
+    await upsertMetadataRow(name, { currency, notes: "" });
+
     return { name };
+  }
+
+  // Creates _Metadata (with its header row) the first time anything needs
+  // to write to it — same addSheet + header-write pattern createTripApi
+  // uses for a trip tab. `titles` is the caller's already-fetched sheet
+  // list, so this never costs an extra fetch on its own.
+  async function ensureMetadataSheet(titles, fetchOpts) {
+    fetchOpts = fetchOpts || {};
+    if (titles.includes(METADATA_SHEET_NAME)) return;
+    await sheetsFetch(sheetsSpreadsheetUrl(":batchUpdate"), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ requests: [{ addSheet: { properties: { title: METADATA_SHEET_NAME } } }] }),
+      ...fetchOpts,
+    });
+    const range = encodeURIComponent(a1Range(METADATA_SHEET_NAME, "A1:C1"));
+    await sheetsFetch(sheetsSpreadsheetUrl(`/values/${range}?valueInputOption=RAW`), {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ values: [METADATA_HEADERS] }),
+      ...fetchOpts,
+    });
+  }
+
+  // Reads the whole _Metadata tab into { [tripName]: { notes, currency } }.
+  // Returns {} (not an error) if the tab doesn't exist yet at all — no
+  // trip has ever had a note or a non-default currency saved, which is a
+  // perfectly normal state, not a broken one.
+  async function getMetadataMap() {
+    const meta = await sheetsGet("?fields=" + encodeURIComponent("sheets.properties.title"));
+    const titles = (meta.sheets || []).map((s) => s.properties.title);
+    if (!titles.includes(METADATA_SHEET_NAME)) return {};
+
+    const range = encodeURIComponent(a1Range(METADATA_SHEET_NAME));
+    const data = await sheetsGet(`/values/${range}`);
+    const rows = data.values || [];
+    if (rows.length === 0) return {};
+    const map = headerIndexMap(rows[0]);
+    if (missingHeaders(map, METADATA_HEADERS).length) return {}; // malformed — fail open to defaults, never block trip selection over it
+
+    const result = {};
+    for (let i = 1; i < rows.length; i++) {
+      const row = rows[i];
+      const tripName = row[map["Trip Name"]];
+      if (!tripName) continue;
+      const currencyVal = row[map["Currency"]];
+      result[String(tripName)] = {
+        notes: row[map["Notes"]] !== undefined ? String(row[map["Notes"]]) : "",
+        currency: currencyVal !== undefined && currencyVal !== "" ? String(currencyVal) : null,
+      };
+    }
+    return result;
+  }
+
+  // Upserts one trip's metadata row (only the given fields; anything
+  // omitted keeps its current value). Unlike postExpense/createTripApi —
+  // pure append, safe under concurrency because Sheets serializes appends
+  // — this is a genuine read-then-write: a note gets edited repeatedly
+  // over a trip's life, so it has to update the *same* row each time. The
+  // row lookup is always done fresh, immediately before the write (never
+  // a cached/stale row index), to keep that window as narrow as possible.
+  // Trade-off, accepted and disclosed: two tabs editing the *same trip's*
+  // note within the same instant could still last-write-wins clobber each
+  // other on that one row — there's no row-level lock available from
+  // client JS. Far narrower blast radius than a whole-file overwrite
+  // (one row, one trip, never another trip's data), and this app is
+  // single-user/Testing-mode, so real locking isn't built for it.
+  async function upsertMetadataRow(tripName, fields, opts) {
+    opts = opts || {};
+    const fetchOpts = opts.keepalive ? { keepalive: true } : {};
+
+    const meta = await sheetsGet("?fields=" + encodeURIComponent("sheets.properties.title"), fetchOpts);
+    const titles = (meta.sheets || []).map((s) => s.properties.title);
+    await ensureMetadataSheet(titles, fetchOpts);
+
+    const range = encodeURIComponent(a1Range(METADATA_SHEET_NAME));
+    const data = await sheetsGet(`/values/${range}`, fetchOpts);
+    const rows = data.values || [];
+    const map = rows.length ? headerIndexMap(rows[0]) : headerIndexMap(METADATA_HEADERS);
+
+    let matchedSheetRow = null; // 1-based sheet row number
+    let existing = { notes: "", currency: "" };
+    for (let i = 1; i < rows.length; i++) {
+      if (rows[i][map["Trip Name"]] === tripName) {
+        matchedSheetRow = i + 1;
+        existing = { notes: rows[i][map["Notes"]] || "", currency: rows[i][map["Currency"]] || "" };
+        break;
+      }
+    }
+
+    const merged = {
+      notes: fields.notes !== undefined ? fields.notes : existing.notes,
+      currency: fields.currency !== undefined ? fields.currency : existing.currency,
+    };
+    const rowValues = [];
+    rowValues[map["Trip Name"]] = tripName;
+    rowValues[map["Notes"]] = merged.notes;
+    rowValues[map["Currency"]] = merged.currency;
+    for (let i = 0; i < rowValues.length; i++) if (rowValues[i] === undefined) rowValues[i] = "";
+
+    if (matchedSheetRow === null) {
+      const appendRange = encodeURIComponent(a1Range(METADATA_SHEET_NAME, "A1"));
+      await sheetsFetch(sheetsSpreadsheetUrl(`/values/${appendRange}:append?valueInputOption=RAW&insertDataOption=INSERT_ROWS`), {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ values: [rowValues] }),
+        ...fetchOpts,
+      });
+    } else {
+      const updateRange = encodeURIComponent(a1Range(METADATA_SHEET_NAME, `${matchedSheetRow}:${matchedSheetRow}`));
+      await sheetsFetch(sheetsSpreadsheetUrl(`/values/${updateRange}?valueInputOption=RAW`), {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ values: [rowValues] }),
+        ...fetchOpts,
+      });
+    }
   }
 
   // Tolerates a cell value that isn't a plain "YYYY-MM-DD" string (e.g. a
@@ -1781,6 +1994,8 @@ tr.row-new { animation: highlight-row 1.6s ease-out; }
   // ---- Global state ----
   let appConfig = null;       // = APP_CONFIG (kept as a variable so the rest of this file reads identically to the server-backed version)
   let activeTrip = null;      // string trip name
+  let activeTripCurrency = null;       // this trip's base currency (from _Metadata, falls back to appConfig.base_currency)
+  let activeTripCurrencySymbol = null; // matching display symbol for activeTripCurrency
   let allExpenses = [];       // every expense for the active trip (unfiltered)
   let currentRangeKey = "all";
   let charts = { byCategory: null, total: null, donut: null };
@@ -1793,12 +2008,38 @@ tr.row-new { animation: highlight-row 1.6s ease-out; }
 
   function formatBase(amount) {
     const n = Number(amount) || 0;
-    return `${appConfig.base_currency_symbol} ${n.toLocaleString(undefined, { minimumFractionDigits: 0, maximumFractionDigits: 2 })}`;
+    return `${activeTripCurrencySymbol} ${n.toLocaleString(undefined, { minimumFractionDigits: 0, maximumFractionDigits: 2 })}`;
+  }
+
+  // Standalone lookup (not dependent on activeTrip*) used to *set*
+  // activeTripCurrencySymbol itself in selectTrip() — currencySymbol()
+  // below can't be used for that, since it reads activeTripCurrency.
+  function symbolForCurrency(code) {
+    if (code === appConfig.base_currency) return appConfig.base_currency_symbol;
+    return CURRENCY_SYMBOLS[code] || code + " ";
   }
 
   function currencySymbol(code) {
-    if (code === appConfig.base_currency) return appConfig.base_currency_symbol;
+    if (code === activeTripCurrency) return activeTripCurrencySymbol;
     return CURRENCY_SYMBOLS[code] || code + " ";
+  }
+
+  function isKnownCurrency(code) {
+    return code === appConfig.base_currency || Object.prototype.hasOwnProperty.call(appConfig.exchange_rates, code);
+  }
+
+  // appConfig.exchange_rates only gives rate-to-ILS per currency (ILS
+  // itself implicitly 1) — there's no direct table for, say, JPY->EUR.
+  // Every cross-currency conversion in this app (an expense logged in a
+  // currency other than the active trip's own) pivots through ILS.
+  function rateToILS(code) {
+    if (code === "ILS") return 1;
+    return appConfig.exchange_rates[code];
+  }
+
+  function convert(amount, fromCode, toCode) {
+    if (fromCode === toCode) return amount;
+    return (amount * rateToILS(fromCode)) / rateToILS(toCode);
   }
 
   function toISODate(d) {
@@ -1814,7 +2055,6 @@ tr.row-new { animation: highlight-row 1.6s ease-out; }
 
   async function init() {
     initTheme();
-    initGoogleAuth();
     appConfig = await getConfig();
     categoryColorMapLight = {};
     categoryColorMapDark = {};
@@ -1828,31 +2068,61 @@ tr.row-new { animation: highlight-row 1.6s ease-out; }
     wireStaticEvents();
     syncRateHistoryOnLoad();
 
+    // Consumed unconditionally, before anything else: whether we're
+    // returning from an explicit Sign in click, a Reconnect click, or a
+    // once-per-tab silent attempt, the token/error lives in the URL
+    // fragment and needs to come out of the address bar immediately
+    // either way.
+    const hashResult = consumeAuthRedirectResult();
+    if (hashResult && hashResult.token) {
+      accessToken = hashResult.token;
+      sessionStorage.removeItem(SILENT_ATTEMPTED_KEY);
+    }
+
     if (!spreadsheetId) {
+      if (hashResult && hashResult.token) {
+        // Just returned from an explicit "Sign in with Google" during
+        // setup — look for the default spreadsheet before falling back
+        // to the manual "paste a URL / create one" chooser.
+        await runDefaultSpreadsheetLookup();
+        return;
+      }
       el("setup-gate").hidden = false;
+      if (hashResult && hashResult.error) {
+        showError(el("setup-error"), describeAuthError(hashResult.error));
+      }
       return;
     }
 
-    // A page refresh always starts with accessToken === null — it's
-    // intentionally never persisted — so the very first thing done with a
-    // known spreadsheet id is to try to obtain a token *before* any Sheets
-    // API call fires. prompt: "" asks silently, with no popup, and
-    // succeeds with no user action as long as they're still signed in to
-    // Google in this browser and have already granted this app consent.
-    const gotToken = await requestToken("");
-    if (!gotToken) {
-      // No popup was shown (silent request just came back empty) — the
-      // user needs to click through an interactive sign-in instead of
-      // staring at an empty/broken dashboard.
-      showConnectionBanner("Sign in to load your trips.", "Sign in with Google", onInitialSignInClick);
+    if (!accessToken) {
+      if (hashResult && hashResult.error) {
+        // A silent or interactive attempt came back negative — ask for an
+        // explicit click rather than looping back through Google again.
+        showConnectionBanner("Sign in to load your trips.", "Sign in with Google", beginGoogleSignIn);
+        return;
+      }
+      if (!sessionStorage.getItem(SILENT_ATTEMPTED_KEY)) {
+        // A page refresh always starts with accessToken === null — it's
+        // intentionally never persisted — so a returning user gets one
+        // silent, no-click redirect attempt per tab session before
+        // falling back to an explicit button. Works with no visible
+        // interaction as long as they're still signed in to Google and
+        // have already granted this app consent.
+        sessionStorage.setItem(SILENT_ATTEMPTED_KEY, "1");
+        redirectToGoogle("none");
+        return;
+      }
+      showConnectionBanner("Sign in to load your trips.", "Sign in with Google", beginGoogleSignIn);
       return;
     }
+
     await loadTripsAfterAuth();
   }
 
   async function loadTripsAfterAuth() {
     try {
       await refreshTripList();
+      restorePendingFormStateIfAny();
     } catch (err) {
       // An authFailure already showed the reconnect banner (from inside
       // sheetsFetch); any other error (bad/deleted spreadsheet id, no
@@ -1863,20 +2133,29 @@ tr.row-new { animation: highlight-row 1.6s ease-out; }
     }
   }
 
-  async function onInitialSignInClick() {
-    const btn = el("connection-banner-btn");
-    btn.disabled = true;
+  // The part of the old onSetupSignIn() that used to run after a
+  // successful pop-up grant — now runs here instead, since a redirect-
+  // based sign-in reloads the whole page and init() is where execution
+  // picks back up.
+  async function runDefaultSpreadsheetLookup() {
+    el("setup-gate").hidden = false;
+    el("setup-signin-btn").hidden = true;
+    el("setup-signin-checking").hidden = false;
     try {
-      const ok = await requestToken("consent");
-      if (ok) {
-        hideConnectionBanner();
-        await loadTripsAfterAuth();
+      const defaultId = await findDefaultSpreadsheet();
+      if (defaultId) {
+        spreadsheetId = defaultId;
+        localStorage.setItem(SPREADSHEET_ID_KEY, defaultId);
+        await enterApp();
+        return;
       }
     } catch (err) {
-      // leave the banner up — the user can just try the button again
+      // Fall through to the manual chooser below — a failed lookup should
+      // never block setup entirely, just skip the auto-connect shortcut.
     } finally {
-      btn.disabled = false;
+      el("setup-signin-checking").hidden = true;
     }
+    el("setup-connect-fields").hidden = false;
   }
 
   // ---- Theme (light / dark) — preference lives in localStorage only,
@@ -1951,19 +2230,24 @@ tr.row-new { animation: highlight-row 1.6s ease-out; }
     }
   }
 
-  function populateCurrencySelect() {
-    const sel = el("expense-currency");
-    sel.innerHTML = "";
+  function populateCurrencyOptions(selectEl) {
+    selectEl.innerHTML = "";
     const baseOpt = document.createElement("option");
     baseOpt.value = appConfig.base_currency;
     baseOpt.textContent = appConfig.base_currency;
-    sel.appendChild(baseOpt);
+    selectEl.appendChild(baseOpt);
     for (const code of Object.keys(appConfig.exchange_rates)) {
       const opt = document.createElement("option");
       opt.value = code;
       opt.textContent = code;
-      sel.appendChild(opt);
+      selectEl.appendChild(opt);
     }
+  }
+
+  function populateCurrencySelect() {
+    populateCurrencyOptions(el("expense-currency"));
+    populateCurrencyOptions(el("new-trip-currency"));
+    el("new-trip-currency").value = appConfig.base_currency;
   }
 
   async function refreshTripList() {
@@ -1998,42 +2282,105 @@ tr.row-new { animation: highlight-row 1.6s ease-out; }
   }
 
   async function selectTrip(name) {
+    flushTripNote(); // save any pending edit for the trip being left, before its note gets overwritten below
     activeTrip = name;
     localStorage.setItem("travel_expenses_active_trip", name);
     el("trip-select").value = name;
     allExpenses = (await getExpenses(name)).expenses;
+
+    const metadataMap = await getMetadataMap();
+    const meta = metadataMap[name] || {};
+    activeTripCurrency = meta.currency && isKnownCurrency(meta.currency) ? meta.currency : appConfig.base_currency;
+    activeTripCurrencySymbol = symbolForCurrency(activeTripCurrency);
+    el("trip-note-input").value = meta.notes || "";
+    el("note-error").classList.remove("visible");
+
     categoryVisibility = {};
     const allCats = new Set(appConfig.categories);
     allExpenses.forEach((e) => allCats.add(e.category));
     for (const cat of allCats) categoryVisibility[cat] = true;
     el("dashboard").hidden = false;
-    loadTripNote(name);
     renderAll();
   }
 
-  // ---- Trip note (one free-text note per trip) — lives in localStorage
-  // only, same as theme and pinned categories, never in the spreadsheet. ----
-
-  function noteStorageKey(tripName) {
-    return `travel_expenses_note_${tripName}`;
-  }
-
-  function loadTripNote(tripName) {
-    el("trip-note-input").value = localStorage.getItem(noteStorageKey(tripName)) || "";
-  }
+  // ---- Trip note (one free-text note per trip) — lives in the _Metadata
+  // sheet now (Notes column), so it syncs across devices instead of being
+  // stuck to whichever browser it was typed in. ----
 
   let noteSaveTimer = null;
   let noteHintTimer = null;
+  let pendingNoteTrip = null; // which trip the debounced save below belongs to
+  let pendingNoteText = null; // its text, captured at keystroke time
+
+  // Actually performs the write. `opts.keepalive` marks a best-effort save
+  // fired from a page-unload handler: it can't be awaited for UI feedback
+  // (the page may already be gone by the time any response arrives), so it
+  // skips the retry loop and the Saved/error UI entirely and just gives
+  // the browser the best chance of finishing the request in the
+  // background via fetch's keepalive flag.
+  async function saveTripNoteNow(tripName, text, opts) {
+    opts = opts || {};
+    if (opts.keepalive) {
+      try { await upsertMetadataRow(tripName, { notes: text }, { keepalive: true }); } catch (e) { /* best effort only */ }
+      return;
+    }
+    try {
+      await withRetry(() => upsertMetadataRow(tripName, { notes: text }), [2000, 6000]);
+      if (tripName === activeTrip) {
+        el("note-error").classList.remove("visible");
+        const hint = el("note-saved-hint");
+        hint.classList.add("visible");
+        clearTimeout(noteHintTimer);
+        noteHintTimer = setTimeout(() => hint.classList.remove("visible"), 1200);
+      }
+    } catch (err) {
+      // The textarea itself is never touched — whatever the user typed
+      // stays on screen; only the "Saved" confirmation is withheld,
+      // replaced with an inline error, matching the standard the rest of
+      // this app holds saves to (never silently discard typed data).
+      if (tripName === activeTrip) {
+        showError(el("note-error"), "Couldn't save note: " + err.message);
+      }
+    }
+  }
+
+  // Debounced autosave has a real window where a save is typed but not yet
+  // written: a page refresh (or a trip switch) inside that ~400ms gap used
+  // to lose the keystrokes entirely, because the pending setTimeout is
+  // simply discarded on navigation, and — separately — the save callback
+  // used to read `activeTrip` fresh, which had already been reassigned to
+  // whatever trip was switched *to* by the time it fired. Fixed two ways:
+  // pendingNoteTrip/pendingNoteText capture which trip's edit this is and
+  // what it says at keystroke time (not read late from state that may
+  // have moved on), and flushTripNote() lets every "about to lose this"
+  // moment (leaving the field, switching trips, the tab hiding, the page
+  // unloading) write immediately instead of waiting out the debounce.
+  function flushTripNote(opts) {
+    if (noteSaveTimer === null) return;
+    clearTimeout(noteSaveTimer);
+    noteSaveTimer = null;
+    if (pendingNoteTrip !== null) {
+      const trip = pendingNoteTrip;
+      const text = pendingNoteText;
+      pendingNoteTrip = null;
+      pendingNoteText = null;
+      saveTripNoteNow(trip, text, opts);
+    }
+  }
 
   function scheduleSaveTripNote() {
+    if (!activeTrip) return;
+    el("note-error").classList.remove("visible");
+    pendingNoteTrip = activeTrip;
+    pendingNoteText = el("trip-note-input").value;
     clearTimeout(noteSaveTimer);
     noteSaveTimer = setTimeout(() => {
-      if (!activeTrip) return;
-      localStorage.setItem(noteStorageKey(activeTrip), el("trip-note-input").value);
-      const hint = el("note-saved-hint");
-      hint.classList.add("visible");
-      clearTimeout(noteHintTimer);
-      noteHintTimer = setTimeout(() => hint.classList.remove("visible"), 1200);
+      noteSaveTimer = null;
+      const trip = pendingNoteTrip;
+      const text = pendingNoteText;
+      pendingNoteTrip = null;
+      pendingNoteText = null;
+      saveTripNoteNow(trip, text);
     }, 400);
   }
 
@@ -2631,6 +2978,65 @@ tr.row-new { animation: highlight-row 1.6s ease-out; }
   function openModal(id) { el(id).hidden = false; }
   function closeModal(id) { el(id).hidden = true; }
 
+  // ---- Preserving an in-progress form across the sign-in/reconnect
+  // redirect. A full-page redirect (unlike the old pop-up) throws away
+  // every bit of in-memory JS state, including whatever a user was mid-
+  // typing into the Add Expense or New Trip modal — so anything open gets
+  // snapshotted to sessionStorage right before navigating away, and
+  // restored (modal reopened, fields refilled) once the app is back and
+  // signed in. Never silently drop typed data just because the token
+  // happened to expire mid-edit. ----
+
+  const PENDING_FORM_KEY = "travel_expenses_pending_form";
+
+  function savePendingFormState() {
+    if (!el("add-expense-modal").hidden) {
+      sessionStorage.setItem(PENDING_FORM_KEY, JSON.stringify({
+        modal: "add-expense-modal",
+        trip: activeTrip,
+        date: el("expense-date").value,
+        category: el("expense-category").value,
+        currency: el("expense-currency").value,
+        amount: el("expense-amount").value,
+        notes: el("expense-notes").value,
+      }));
+    } else if (!el("new-trip-modal").hidden) {
+      sessionStorage.setItem(PENDING_FORM_KEY, JSON.stringify({
+        modal: "new-trip-modal",
+        name: el("new-trip-name").value,
+        currency: el("new-trip-currency").value,
+      }));
+    } else {
+      sessionStorage.removeItem(PENDING_FORM_KEY);
+    }
+  }
+
+  // Called once a trip is selected and rendered, so an add-expense
+  // restore has somewhere valid to reopen into. A saved add-expense form
+  // is only restored for the *same* trip it was opened against — if that
+  // trip somehow isn't the one now active, silently dropping the restore
+  // is safer than reopening it against the wrong trip's categories/data.
+  function restorePendingFormStateIfAny() {
+    const raw = sessionStorage.getItem(PENDING_FORM_KEY);
+    if (!raw) return;
+    sessionStorage.removeItem(PENDING_FORM_KEY);
+    let saved;
+    try { saved = JSON.parse(raw); } catch (e) { return; }
+    if (saved.modal === "add-expense-modal" && saved.trip === activeTrip) {
+      openModal("add-expense-modal");
+      el("expense-date").value = saved.date;
+      el("expense-category").value = saved.category;
+      el("expense-currency").value = saved.currency;
+      el("expense-amount").value = saved.amount;
+      el("expense-notes").value = saved.notes;
+      updateConversionLine();
+    } else if (saved.modal === "new-trip-modal") {
+      openModal("new-trip-modal");
+      el("new-trip-name").value = saved.name;
+      el("new-trip-currency").value = saved.currency;
+    }
+  }
+
   // ---- Connection banner — a small persistent bar (not a blocking modal)
   // used for two distinct situations: a silent token refresh failed
   // (needs the user to click Reconnect), or the saved spreadsheet id
@@ -2650,20 +3056,8 @@ tr.row-new { animation: highlight-row 1.6s ease-out; }
     el("connection-banner").hidden = true;
   }
 
-  async function onReconnectClick() {
-    const btn = el("connection-banner-btn");
-    btn.disabled = true;
-    try {
-      const ok = await requestToken("consent");
-      if (ok) {
-        hideConnectionBanner();
-        await loadTripsAfterAuth();
-      }
-    } catch (err) {
-      // leave the banner up — the user can just try the button again
-    } finally {
-      btn.disabled = false;
-    }
+  function onReconnectClick() {
+    beginGoogleSignIn();
   }
 
   function onDisconnectClick() {
@@ -2679,17 +3073,12 @@ tr.row-new { animation: highlight-row 1.6s ease-out; }
     el("setup-saving-indicator").classList.toggle("visible", busy);
   }
 
-  async function onSetupSignIn() {
-    const errorEl = el("setup-error");
-    errorEl.classList.remove("visible");
-    try {
-      const ok = await requestToken("consent");
-      if (!ok) { showError(errorEl, "Sign-in was cancelled or failed."); return; }
-      el("setup-signin-btn").hidden = true;
-      el("setup-connect-fields").hidden = false;
-    } catch (err) {
-      showError(errorEl, err.message || "Sign-in failed.");
-    }
+  function onSetupSignIn() {
+    // Redirects immediately — the rest of what used to happen here after
+    // a successful sign-in (looking for the default spreadsheet) now
+    // lives in runDefaultSpreadsheetLookup(), called from init() once the
+    // page reloads and comes back with a token in the URL fragment.
+    beginGoogleSignIn();
   }
 
   async function onSetupConnect() {
@@ -2817,6 +3206,16 @@ tr.row-new { animation: highlight-row 1.6s ease-out; }
 
     // Trip note
     el("trip-note-input").addEventListener("input", scheduleSaveTripNote);
+    el("trip-note-input").addEventListener("blur", flushTripNote);
+    // Two independent nets, since neither fires reliably in every
+    // situation on every browser (notably iOS Safari): visibilitychange
+    // catches backgrounding/switching apps/tabs, pagehide catches
+    // navigation/refresh/close — between the two, a pending note edit
+    // should never be sitting unsaved when the page actually goes away.
+    document.addEventListener("visibilitychange", () => {
+      if (document.visibilityState === "hidden") flushTripNote({ keepalive: true });
+    });
+    window.addEventListener("pagehide", () => flushTripNote({ keepalive: true }));
 
     // NEW — Google Sheets setup gate + disconnect
     el("setup-signin-btn").addEventListener("click", onSetupSignIn);
@@ -2859,6 +3258,11 @@ tr.row-new { animation: highlight-row 1.6s ease-out; }
       showError(errorEl, "Trip name is required.");
       return;
     }
+    if (isReservedTripName(name)) {
+      showError(errorEl, `"${name}" is a reserved name — choose a different trip name.`);
+      return;
+    }
+    const currency = el("new-trip-currency").value;
     const btn = el("create-trip-btn");
     btn.disabled = true;
     el("new-trip-saving-indicator").classList.add("visible");
@@ -2867,7 +3271,7 @@ tr.row-new { animation: highlight-row 1.6s ease-out; }
       // 5xx; an auth failure skips straight to the error below instead of
       // wasting the retry budget, since it needs a Reconnect click, not
       // a background retry.
-      await withRetry(() => createTripApi(name), [2000, 6000]);
+      await withRetry(() => createTripApi(name, currency), [2000, 6000]);
       closeModal("new-trip-modal");
       await refreshTripList();
       await selectTrip(name);
@@ -2883,7 +3287,7 @@ tr.row-new { animation: highlight-row 1.6s ease-out; }
   function openAddExpenseModal() {
     el("expense-date").value = todayISO();
     el("expense-category").value = appConfig.categories[0];
-    el("expense-currency").value = appConfig.base_currency;
+    el("expense-currency").value = activeTripCurrency;
     el("expense-amount").value = "";
     el("expense-notes").value = "";
     el("divide-panel").classList.remove("visible");
@@ -2900,14 +3304,14 @@ tr.row-new { animation: highlight-row 1.6s ease-out; }
     const currency = el("expense-currency").value;
     const amount = parseFloat(el("expense-amount").value);
     const line = el("conversion-line");
-    if (currency === appConfig.base_currency || isNaN(amount)) {
+    if (currency === activeTripCurrency || isNaN(amount)) {
       line.hidden = true;
       return;
     }
-    const rate = appConfig.exchange_rates[currency];
-    const converted = amount * rate;
+    const converted = convert(amount, currency, activeTripCurrency);
+    const effectiveRate = rateToILS(currency) / rateToILS(activeTripCurrency);
     line.hidden = false;
-    line.textContent = `${currencySymbol(currency)}${amount.toFixed(2)} → ${formatBase(converted)} (rate ${rate})`;
+    line.textContent = `${currencySymbol(currency)}${amount.toFixed(2)} → ${formatBase(converted)} (rate ${effectiveRate.toFixed(4)})`;
   }
 
   function updateDivideResult() {
@@ -2937,8 +3341,7 @@ tr.row-new { animation: highlight-row 1.6s ease-out; }
     if (!date) { return showError(errorEl, "Date is required."); }
     if (!(amount > 0)) { return showError(errorEl, "Amount must be greater than 0."); }
 
-    const rate = currency === appConfig.base_currency ? 1 : appConfig.exchange_rates[currency];
-    const amountBase = Math.round(amount * rate * 100) / 100;
+    const amountBase = Math.round(convert(amount, currency, activeTripCurrency) * 100) / 100;
 
     const btn = el("save-expense-btn");
     btn.disabled = true;
