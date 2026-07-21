@@ -1382,6 +1382,22 @@ tr.row-new { animation: highlight-row 1.6s ease-out; }
           resolve(!!(resp && resp.access_token));
         }
       },
+      // Fires instead of callback when the request never gets a response at
+      // all — e.g. the pop-up was blocked outright, or the user closed it.
+      // Without this, that case left pendingTokenResolve stuck forever (the
+      // awaiting caller's UI just hung with no feedback). Only resolves the
+      // pending promise here — the caller (onSetupSignIn / onReconnectClick)
+      // already has its own context-appropriate failure handling for
+      // ok === false, so showing a second, generic message here would be
+      // redundant at best and wrong-context at worst.
+      error_callback: (err) => {
+        console.warn('Google auth failed:', err);
+        if (pendingTokenResolve) {
+          const resolve = pendingTokenResolve;
+          pendingTokenResolve = null;
+          resolve(false);
+        }
+      },
     });
   }
 
