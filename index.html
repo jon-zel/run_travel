@@ -936,6 +936,7 @@ tr.row-new { animation: highlight-row 1.6s ease-out; }
           <span id="note-saved-hint" class="note-saved-hint">Saved</span>
         </div>
         <textarea id="trip-note-input" class="trip-note-input" dir="auto" placeholder="Write a note for this trip…"></textarea>
+        <div id="note-error" class="field-error"></div>
       </div>
     </section>
 
@@ -997,6 +998,10 @@ tr.row-new { animation: highlight-row 1.6s ease-out; }
     <div class="modal-field">
       <label for="new-trip-name">Trip name</label>
       <input type="text" id="new-trip-name" placeholder="e.g. Greece 2026">
+    </div>
+    <div class="modal-field">
+      <label for="new-trip-currency">Trip currency</label>
+      <select id="new-trip-currency"></select>
     </div>
     <div id="new-trip-error" class="field-error"></div>
     <div class="modal-actions">
@@ -1358,7 +1363,29 @@ tr.row-new { animation: highlight-row 1.6s ease-out; }
   const CLIENT_ID = '1065291210789-1if7o28onefirphe5n92r2jl0l5crg3f.apps.googleusercontent.com';
   const SHEETS_SCOPE = "https://www.googleapis.com/auth/spreadsheets";
   const REQUIRED_HEADERS = ["Date", "Amount", "Category", "Notes"];
+
+  // A single reserved sheet tab (not a per-trip tab) holding one row per
+  // trip: its note and its base currency. Its header row never matches
+  // REQUIRED_HEADERS, so getTrips()'s existing header-check already keeps
+  // it out of the trip dropdown with no special-casing needed.
+  const METADATA_SHEET_NAME = "_Metadata";
+  const METADATA_HEADERS = ["Trip Name", "Notes", "Currency"];
+
+  function isReservedTripName(name) {
+    return (name || "").trim().toLowerCase() === METADATA_SHEET_NAME.toLowerCase();
+  }
+
   const SPREADSHEET_ID_KEY = "travel_expenses_spreadsheet_id";
+  // Mirrors SPREADSHEET_ID_KEY on every successful connect, but — unlike
+  // it — is never cleared by Disconnect. Only used to prefill the manual
+  // "Google Sheets URL" field next time it's shown, so reconnecting to
+  // the same sheet doesn't mean hunting down the URL again.
+  const LAST_SPREADSHEET_ID_KEY = "travel_expenses_last_spreadsheet_id";
+
+  function rememberSpreadsheetId(id) {
+    localStorage.setItem(SPREADSHEET_ID_KEY, id);
+    localStorage.setItem(LAST_SPREADSHEET_ID_KEY, id);
+  }
 
   let tokenClient = null;
   let accessToken = null;        // in-memory only — never persisted
@@ -1467,7 +1494,7 @@ tr.row-new { animation: highlight-row 1.6s ease-out; }
     return body;
   }
 
-  const sheetsGet = (path) => sheetsFetch(sheetsSpreadsheetUrl(path), { method: "GET" });
+  const sheetsGet = (path, extra) => sheetsFetch(sheetsSpreadsheetUrl(path), { method: "GET", ...(extra || {}) });
 
   async function createSpreadsheet() {
     const doCreate = () => fetch("https://sheets.googleapis.com/v4/spreadsheets", {
@@ -1504,8 +1531,8 @@ tr.row-new { animation: highlight-row 1.6s ease-out; }
     return map;
   }
 
-  function missingHeaders(map) {
-    return REQUIRED_HEADERS.filter((h) => !(h in map));
+  function missingHeaders(map, required) {
+    return (required || REQUIRED_HEADERS).filter((h) => !(h in map));
   }
 
   async function getTripHeaderMap(trip, forceRefresh) {
@@ -1555,7 +1582,10 @@ tr.row-new { animation: highlight-row 1.6s ease-out; }
     return { trips };
   }
 
-  async function createTripApi(name) {
+  async function createTripApi(name, currency) {
+    if (isReservedTripName(name)) {
+      throw new Error(`'${name}' is a reserved name — choose a different trip name.`);
+    }
     const meta = await sheetsGet("?fields=" + encodeURIComponent("sheets.properties.title"));
     const titles = (meta.sheets || []).map((s) => s.properties.title);
     if (titles.includes(name)) {
@@ -1579,7 +1609,128 @@ tr.row-new { animation: highlight-row 1.6s ease-out; }
     });
 
     tripHeaderMapCache[name] = { Date: 0, Amount: 1, Category: 2, Notes: 3 };
+
+    // Trip names are already guaranteed unique above, so this is always a
+    // fresh append inside upsertMetadataRow, never the same-row update path.
+    await upsertMetadataRow(name, { currency, notes: "" });
+
     return { name };
+  }
+
+  // Creates _Metadata (with its header row) the first time anything needs
+  // to write to it — same addSheet + header-write pattern createTripApi
+  // uses for a trip tab.
+  async function ensureMetadataSheet(titles, fetchOpts) {
+    fetchOpts = fetchOpts || {};
+    if (titles.includes(METADATA_SHEET_NAME)) return;
+    await sheetsFetch(sheetsSpreadsheetUrl(":batchUpdate"), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ requests: [{ addSheet: { properties: { title: METADATA_SHEET_NAME } } }] }),
+      ...fetchOpts,
+    });
+    const range = encodeURIComponent(a1Range(METADATA_SHEET_NAME, "A1:C1"));
+    await sheetsFetch(sheetsSpreadsheetUrl(`/values/${range}?valueInputOption=RAW`), {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ values: [METADATA_HEADERS] }),
+      ...fetchOpts,
+    });
+  }
+
+  // Reads the whole _Metadata tab into { [tripName]: { notes, currency } }.
+  // Returns {} (not an error) if the tab doesn't exist yet at all — no
+  // trip has ever had a note or a non-default currency saved, which is a
+  // perfectly normal state, not a broken one.
+  async function getMetadataMap() {
+    const meta = await sheetsGet("?fields=" + encodeURIComponent("sheets.properties.title"));
+    const titles = (meta.sheets || []).map((s) => s.properties.title);
+    if (!titles.includes(METADATA_SHEET_NAME)) return {};
+
+    const range = encodeURIComponent(a1Range(METADATA_SHEET_NAME));
+    const data = await sheetsGet(`/values/${range}`);
+    const rows = data.values || [];
+    if (rows.length === 0) return {};
+    const map = headerIndexMap(rows[0]);
+    if (missingHeaders(map, METADATA_HEADERS).length) return {}; // malformed — fail open to defaults, never block trip selection over it
+
+    const result = {};
+    for (let i = 1; i < rows.length; i++) {
+      const row = rows[i];
+      const tripName = row[map["Trip Name"]];
+      if (!tripName) continue;
+      const currencyVal = row[map["Currency"]];
+      result[String(tripName)] = {
+        notes: row[map["Notes"]] !== undefined ? String(row[map["Notes"]]) : "",
+        currency: currencyVal !== undefined && currencyVal !== "" ? String(currencyVal) : null,
+      };
+    }
+    return result;
+  }
+
+  // Upserts one trip's metadata row (only the given fields; anything
+  // omitted keeps its current value). Unlike postExpense/createTripApi —
+  // pure append, safe under concurrency because Sheets serializes appends
+  // — this is a genuine read-then-write: a note gets edited repeatedly
+  // over a trip's life, so it has to update the *same* row each time. The
+  // row lookup is always done fresh, immediately before the write (never
+  // a cached/stale row index), to keep that window as narrow as possible.
+  // Trade-off, accepted and disclosed: two tabs editing the *same trip's*
+  // note within the same instant could still last-write-wins clobber each
+  // other on that one row — there's no row-level lock available from
+  // client JS. Far narrower blast radius than a whole-file overwrite
+  // (one row, one trip, never another trip's data), and this app is
+  // single-user/Testing-mode, so real locking isn't built for it.
+  async function upsertMetadataRow(tripName, fields, opts) {
+    opts = opts || {};
+    const fetchOpts = opts.keepalive ? { keepalive: true } : {};
+
+    const meta = await sheetsGet("?fields=" + encodeURIComponent("sheets.properties.title"), fetchOpts);
+    const titles = (meta.sheets || []).map((s) => s.properties.title);
+    await ensureMetadataSheet(titles, fetchOpts);
+
+    const range = encodeURIComponent(a1Range(METADATA_SHEET_NAME));
+    const data = await sheetsGet(`/values/${range}`, fetchOpts);
+    const rows = data.values || [];
+    const map = rows.length ? headerIndexMap(rows[0]) : headerIndexMap(METADATA_HEADERS);
+
+    let matchedSheetRow = null; // 1-based sheet row number
+    let existing = { notes: "", currency: "" };
+    for (let i = 1; i < rows.length; i++) {
+      if (rows[i][map["Trip Name"]] === tripName) {
+        matchedSheetRow = i + 1;
+        existing = { notes: rows[i][map["Notes"]] || "", currency: rows[i][map["Currency"]] || "" };
+        break;
+      }
+    }
+
+    const merged = {
+      notes: fields.notes !== undefined ? fields.notes : existing.notes,
+      currency: fields.currency !== undefined ? fields.currency : existing.currency,
+    };
+    const rowValues = [];
+    rowValues[map["Trip Name"]] = tripName;
+    rowValues[map["Notes"]] = merged.notes;
+    rowValues[map["Currency"]] = merged.currency;
+    for (let i = 0; i < rowValues.length; i++) if (rowValues[i] === undefined) rowValues[i] = "";
+
+    if (matchedSheetRow === null) {
+      const appendRange = encodeURIComponent(a1Range(METADATA_SHEET_NAME, "A1"));
+      await sheetsFetch(sheetsSpreadsheetUrl(`/values/${appendRange}:append?valueInputOption=RAW&insertDataOption=INSERT_ROWS`), {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ values: [rowValues] }),
+        ...fetchOpts,
+      });
+    } else {
+      const updateRange = encodeURIComponent(a1Range(METADATA_SHEET_NAME, `${matchedSheetRow}:${matchedSheetRow}`));
+      await sheetsFetch(sheetsSpreadsheetUrl(`/values/${updateRange}?valueInputOption=RAW`), {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ values: [rowValues] }),
+        ...fetchOpts,
+      });
+    }
   }
 
   // Tolerates a cell value that isn't a plain "YYYY-MM-DD" string (e.g. a
@@ -1792,6 +1943,8 @@ tr.row-new { animation: highlight-row 1.6s ease-out; }
   // ---- Global state ----
   let appConfig = null;       // = APP_CONFIG (kept as a variable so the rest of this file reads identically to the server-backed version)
   let activeTrip = null;      // string trip name
+  let activeTripCurrency = null;       // this trip's base currency (from _Metadata, falls back to appConfig.base_currency)
+  let activeTripCurrencySymbol = null; // matching display symbol for activeTripCurrency
   let allExpenses = [];       // every expense for the active trip (unfiltered)
   let currentRangeKey = "all";
   let charts = { byCategory: null, total: null, donut: null };
@@ -1804,12 +1957,38 @@ tr.row-new { animation: highlight-row 1.6s ease-out; }
 
   function formatBase(amount) {
     const n = Number(amount) || 0;
-    return `${appConfig.base_currency_symbol} ${n.toLocaleString(undefined, { minimumFractionDigits: 0, maximumFractionDigits: 2 })}`;
+    return `${activeTripCurrencySymbol} ${n.toLocaleString(undefined, { minimumFractionDigits: 0, maximumFractionDigits: 2 })}`;
+  }
+
+  // Standalone lookup (not dependent on activeTrip*) used to *set*
+  // activeTripCurrencySymbol itself in selectTrip() — currencySymbol()
+  // below can't be used for that, since it reads activeTripCurrency.
+  function symbolForCurrency(code) {
+    if (code === appConfig.base_currency) return appConfig.base_currency_symbol;
+    return CURRENCY_SYMBOLS[code] || code + " ";
   }
 
   function currencySymbol(code) {
-    if (code === appConfig.base_currency) return appConfig.base_currency_symbol;
+    if (code === activeTripCurrency) return activeTripCurrencySymbol;
     return CURRENCY_SYMBOLS[code] || code + " ";
+  }
+
+  function isKnownCurrency(code) {
+    return code === appConfig.base_currency || Object.prototype.hasOwnProperty.call(appConfig.exchange_rates, code);
+  }
+
+  // appConfig.exchange_rates only gives rate-to-ILS per currency (ILS
+  // itself implicitly 1) — there's no direct table for, say, JPY->EUR.
+  // Every cross-currency conversion in this app (an expense logged in a
+  // currency other than the active trip's own) pivots through ILS.
+  function rateToILS(code) {
+    if (code === "ILS") return 1;
+    return appConfig.exchange_rates[code];
+  }
+
+  function convert(amount, fromCode, toCode) {
+    if (fromCode === toCode) return amount;
+    return (amount * rateToILS(fromCode)) / rateToILS(toCode);
   }
 
   function toISODate(d) {
@@ -1927,19 +2106,24 @@ tr.row-new { animation: highlight-row 1.6s ease-out; }
     }
   }
 
-  function populateCurrencySelect() {
-    const sel = el("expense-currency");
-    sel.innerHTML = "";
+  function populateCurrencyOptions(selectEl) {
+    selectEl.innerHTML = "";
     const baseOpt = document.createElement("option");
     baseOpt.value = appConfig.base_currency;
     baseOpt.textContent = appConfig.base_currency;
-    sel.appendChild(baseOpt);
+    selectEl.appendChild(baseOpt);
     for (const code of Object.keys(appConfig.exchange_rates)) {
       const opt = document.createElement("option");
       opt.value = code;
       opt.textContent = code;
-      sel.appendChild(opt);
+      selectEl.appendChild(opt);
     }
+  }
+
+  function populateCurrencySelect() {
+    populateCurrencyOptions(el("expense-currency"));
+    populateCurrencyOptions(el("new-trip-currency"));
+    el("new-trip-currency").value = appConfig.base_currency;
   }
 
   async function refreshTripList() {
@@ -1974,42 +2158,107 @@ tr.row-new { animation: highlight-row 1.6s ease-out; }
   }
 
   async function selectTrip(name) {
+    flushTripNote(); // save any pending edit for the trip being left, before its note gets overwritten below
     activeTrip = name;
     localStorage.setItem("travel_expenses_active_trip", name);
     el("trip-select").value = name;
     allExpenses = (await getExpenses(name)).expenses;
+
+    const metadataMap = await getMetadataMap();
+    const meta = metadataMap[name] || {};
+    activeTripCurrency = meta.currency && isKnownCurrency(meta.currency) ? meta.currency : appConfig.base_currency;
+    activeTripCurrencySymbol = symbolForCurrency(activeTripCurrency);
+    el("trip-note-input").value = meta.notes || "";
+    el("note-error").classList.remove("visible");
+
     categoryVisibility = {};
     const allCats = new Set(appConfig.categories);
     allExpenses.forEach((e) => allCats.add(e.category));
     for (const cat of allCats) categoryVisibility[cat] = true;
     el("dashboard").hidden = false;
-    loadTripNote(name);
     renderAll();
   }
 
-  // ---- Trip note (one free-text note per trip) — lives in localStorage
-  // only, same as theme and pinned categories, never in the spreadsheet. ----
-
-  function noteStorageKey(tripName) {
-    return `travel_expenses_note_${tripName}`;
-  }
-
-  function loadTripNote(tripName) {
-    el("trip-note-input").value = localStorage.getItem(noteStorageKey(tripName)) || "";
-  }
+  // ---- Trip note (one free-text note per trip) — lives in the _Metadata
+  // sheet (Notes column), so it syncs across devices instead of being
+  // stuck to whichever browser it was typed in, and survives a refresh
+  // that lands inside the save debounce window (see flushTripNote below —
+  // that race is exactly what caused notes to go missing before). ----
 
   let noteSaveTimer = null;
   let noteHintTimer = null;
+  let pendingNoteTrip = null; // which trip the debounced save below belongs to
+  let pendingNoteText = null; // its text, captured at keystroke time
+
+  // Actually performs the write. `opts.keepalive` marks a best-effort save
+  // fired from a page-unload handler: it can't be awaited for UI feedback
+  // (the page may already be gone by the time any response arrives), so it
+  // skips the retry loop and the Saved/error UI entirely and just gives
+  // the browser the best chance of finishing the request in the
+  // background via fetch's keepalive flag.
+  async function saveTripNoteNow(tripName, text, opts) {
+    opts = opts || {};
+    if (opts.keepalive) {
+      try { await upsertMetadataRow(tripName, { notes: text }, { keepalive: true }); } catch (e) { /* best effort only */ }
+      return;
+    }
+    try {
+      await withRetry(() => upsertMetadataRow(tripName, { notes: text }), [2000, 6000]);
+      if (tripName === activeTrip) {
+        el("note-error").classList.remove("visible");
+        const hint = el("note-saved-hint");
+        hint.classList.add("visible");
+        clearTimeout(noteHintTimer);
+        noteHintTimer = setTimeout(() => hint.classList.remove("visible"), 1200);
+      }
+    } catch (err) {
+      // The textarea itself is never touched — whatever the user typed
+      // stays on screen; only the "Saved" confirmation is withheld,
+      // replaced with an inline error, matching the standard the rest of
+      // this app holds saves to (never silently discard typed data).
+      if (tripName === activeTrip) {
+        showError(el("note-error"), "Couldn't save note: " + err.message);
+      }
+    }
+  }
+
+  // Debounced autosave has a real window where a save is typed but not yet
+  // written: a page refresh (or a trip switch) inside that ~400ms gap used
+  // to lose the keystrokes entirely, because the pending setTimeout is
+  // simply discarded on navigation, and — separately — reading `activeTrip`
+  // fresh inside the timeout callback could pick up whatever trip was
+  // switched *to* by the time it fired, not the one the edit belonged to.
+  // Fixed two ways: pendingNoteTrip/pendingNoteText capture which trip's
+  // edit this is and what it says at keystroke time, and flushTripNote()
+  // lets every "about to lose this" moment (leaving the field, switching
+  // trips, the tab hiding, the page unloading) write immediately instead
+  // of waiting out the debounce.
+  function flushTripNote(opts) {
+    if (noteSaveTimer === null) return;
+    clearTimeout(noteSaveTimer);
+    noteSaveTimer = null;
+    if (pendingNoteTrip !== null) {
+      const trip = pendingNoteTrip;
+      const text = pendingNoteText;
+      pendingNoteTrip = null;
+      pendingNoteText = null;
+      saveTripNoteNow(trip, text, opts);
+    }
+  }
 
   function scheduleSaveTripNote() {
+    if (!activeTrip) return;
+    el("note-error").classList.remove("visible");
+    pendingNoteTrip = activeTrip;
+    pendingNoteText = el("trip-note-input").value;
     clearTimeout(noteSaveTimer);
     noteSaveTimer = setTimeout(() => {
-      if (!activeTrip) return;
-      localStorage.setItem(noteStorageKey(activeTrip), el("trip-note-input").value);
-      const hint = el("note-saved-hint");
-      hint.classList.add("visible");
-      clearTimeout(noteHintTimer);
-      noteHintTimer = setTimeout(() => hint.classList.remove("visible"), 1200);
+      noteSaveTimer = null;
+      const trip = pendingNoteTrip;
+      const text = pendingNoteText;
+      pendingNoteTrip = null;
+      pendingNoteText = null;
+      saveTripNoteNow(trip, text);
     }, 400);
   }
 
@@ -2662,6 +2911,11 @@ tr.row-new { animation: highlight-row 1.6s ease-out; }
       const ok = await requestToken("consent");
       if (!ok) { showError(errorEl, "Sign-in was cancelled or failed."); return; }
       el("setup-signin-btn").hidden = true;
+      const urlField = el("setup-sheet-url");
+      const lastId = localStorage.getItem(LAST_SPREADSHEET_ID_KEY);
+      if (lastId && !urlField.value) {
+        urlField.value = `https://docs.google.com/spreadsheets/d/${lastId}/edit`;
+      }
       el("setup-connect-fields").hidden = false;
     } catch (err) {
       showError(errorEl, err.message || "Sign-in failed.");
@@ -2678,7 +2932,7 @@ tr.row-new { animation: highlight-row 1.6s ease-out; }
     spreadsheetId = id;
     try {
       await sheetsGet("?fields=" + encodeURIComponent("spreadsheetId")); // verifies access before committing to localStorage
-      localStorage.setItem(SPREADSHEET_ID_KEY, id);
+      rememberSpreadsheetId(id);
       await enterApp();
     } catch (err) {
       spreadsheetId = previousId;
@@ -2695,7 +2949,7 @@ tr.row-new { animation: highlight-row 1.6s ease-out; }
     try {
       const id = await createSpreadsheet();
       spreadsheetId = id;
-      localStorage.setItem(SPREADSHEET_ID_KEY, id);
+      rememberSpreadsheetId(id);
       await enterApp();
     } catch (err) {
       showError(errorEl, err.message || "Could not create a spreadsheet.");
@@ -2793,6 +3047,17 @@ tr.row-new { animation: highlight-row 1.6s ease-out; }
 
     // Trip note
     el("trip-note-input").addEventListener("input", scheduleSaveTripNote);
+    el("trip-note-input").addEventListener("blur", () => flushTripNote());
+    // Two independent nets, since neither fires reliably in every
+    // situation on every browser: visibilitychange catches backgrounding/
+    // switching apps/tabs, pagehide catches navigation/refresh/close —
+    // between the two, a pending note edit should never be sitting
+    // unsaved when the page actually goes away. keepalive:true gives the
+    // in-flight request a chance to finish even after JS execution stops.
+    document.addEventListener("visibilitychange", () => {
+      if (document.visibilityState === "hidden") flushTripNote({ keepalive: true });
+    });
+    window.addEventListener("pagehide", () => flushTripNote({ keepalive: true }));
 
     // NEW — Google Sheets setup gate + disconnect
     el("setup-signin-btn").addEventListener("click", onSetupSignIn);
@@ -2835,6 +3100,11 @@ tr.row-new { animation: highlight-row 1.6s ease-out; }
       showError(errorEl, "Trip name is required.");
       return;
     }
+    if (isReservedTripName(name)) {
+      showError(errorEl, `"${name}" is a reserved name — choose a different trip name.`);
+      return;
+    }
+    const currency = el("new-trip-currency").value;
     const btn = el("create-trip-btn");
     btn.disabled = true;
     el("new-trip-saving-indicator").classList.add("visible");
@@ -2843,7 +3113,7 @@ tr.row-new { animation: highlight-row 1.6s ease-out; }
       // 5xx; an auth failure skips straight to the error below instead of
       // wasting the retry budget, since it needs a Reconnect click, not
       // a background retry.
-      await withRetry(() => createTripApi(name), [2000, 6000]);
+      await withRetry(() => createTripApi(name, currency), [2000, 6000]);
       closeModal("new-trip-modal");
       await refreshTripList();
       await selectTrip(name);
@@ -2859,7 +3129,7 @@ tr.row-new { animation: highlight-row 1.6s ease-out; }
   function openAddExpenseModal() {
     el("expense-date").value = todayISO();
     el("expense-category").value = appConfig.categories[0];
-    el("expense-currency").value = appConfig.base_currency;
+    el("expense-currency").value = activeTripCurrency;
     el("expense-amount").value = "";
     el("expense-notes").value = "";
     el("divide-panel").classList.remove("visible");
@@ -2876,14 +3146,14 @@ tr.row-new { animation: highlight-row 1.6s ease-out; }
     const currency = el("expense-currency").value;
     const amount = parseFloat(el("expense-amount").value);
     const line = el("conversion-line");
-    if (currency === appConfig.base_currency || isNaN(amount)) {
+    if (currency === activeTripCurrency || isNaN(amount)) {
       line.hidden = true;
       return;
     }
-    const rate = appConfig.exchange_rates[currency];
-    const converted = amount * rate;
+    const converted = convert(amount, currency, activeTripCurrency);
+    const effectiveRate = rateToILS(currency) / rateToILS(activeTripCurrency);
     line.hidden = false;
-    line.textContent = `${currencySymbol(currency)}${amount.toFixed(2)} → ${formatBase(converted)} (rate ${rate})`;
+    line.textContent = `${currencySymbol(currency)}${amount.toFixed(2)} → ${formatBase(converted)} (rate ${effectiveRate.toFixed(4)})`;
   }
 
   function updateDivideResult() {
@@ -2913,8 +3183,7 @@ tr.row-new { animation: highlight-row 1.6s ease-out; }
     if (!date) { return showError(errorEl, "Date is required."); }
     if (!(amount > 0)) { return showError(errorEl, "Amount must be greater than 0."); }
 
-    const rate = currency === appConfig.base_currency ? 1 : appConfig.exchange_rates[currency];
-    const amountBase = Math.round(amount * rate * 100) / 100;
+    const amountBase = Math.round(convert(amount, currency, activeTripCurrency) * 100) / 100;
 
     const btn = el("save-expense-btn");
     btn.disabled = true;
