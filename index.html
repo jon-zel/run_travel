@@ -9,14 +9,9 @@ GOOGLE CLOUD SETUP — one-time, before first deploy of this file:
      only let listed test users sign in — that's fine for a personal app).
   4. APIs & Services > Credentials > Create Credentials > OAuth client ID >
      Application type "Web application".
-     - Authorized redirect URIs: add the *exact* URL this file is served at, including
-       the trailing path — e.g. "https://<your-username>.github.io/travel-expenses/
-       static-gsheets/" for GitHub Pages, and "http://localhost:8000/" for local
-       testing. Must match exactly (scheme, host, port, path) or sign-in will fail.
-       (This app redirects the whole page to Google and back for sign-in — not a
-       pop-up — specifically because pop-ups have no reliable "allow" recourse on iOS
-       Safari. Authorized JavaScript origins isn't used by this flow, but leaving one
-       configured from an earlier setup doesn't hurt anything.)
+     - Authorized JavaScript origins: add "https://<your-username>.github.io"
+       (and "http://localhost:PORT" for local testing, if you serve this file locally).
+     - No redirect URI needed (this uses the token model, not the code model).
   5. Copy the generated Client ID into CLIENT_ID below.
   This is a static site with no server, so there is no client secret involved anywhere.
 -->
@@ -809,6 +804,14 @@ tr.row-new { animation: highlight-row 1.6s ease-out; }
 }
 .setup-or { color: var(--text-faint); font-size: var(--fs-xs); text-transform: uppercase; letter-spacing: .04em; }
 
+.setup-popup-hint {
+  color: var(--text-faint);
+  font-size: var(--fs-xs);
+  max-width: 360px;
+  margin: var(--sp-3) auto 0;
+  line-height: 1.5;
+}
+
 .connection-banner {
   display: flex;
   align-items: center;
@@ -876,6 +879,10 @@ tr.row-new { animation: highlight-row 1.6s ease-out; }
     <div class="setup-signin-row">
       <button id="setup-signin-btn" class="btn btn-primary">Sign in with Google</button>
     </div>
+    <span id="setup-signin-waiting" class="saving-indicator" style="display:flex; justify-content:center; margin-top: var(--sp-4);" hidden>
+      <span class="spinner"></span> Waiting for the Google sign-in window…
+    </span>
+    <p class="setup-popup-hint">This opens a Google sign-in pop-up window. If it looks cut off, half-hidden, or never appears, your browser is likely blocking pop-ups for this page — look for a blocked pop-up icon in the address bar, allow pop-ups for this site, then click "Sign in with Google" again.</p>
     <!-- Deliberately OUTSIDE #setup-connect-fields (which stays hidden
          until sign-in succeeds) — a sign-in failure message written into
          a still-hidden container is invisible, which is exactly the bug
@@ -1115,6 +1122,7 @@ tr.row-new { animation: highlight-row 1.6s ease-out; }
   </div>
 </div>
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js"></script>
+<script src="https://accounts.google.com/gsi/client"></script>
 <script>
 /* Custom date input — replaces native <input type="date">.
  *
@@ -1403,65 +1411,87 @@ tr.row-new { animation: highlight-row 1.6s ease-out; }
     return (name || "").trim().toLowerCase() === METADATA_SHEET_NAME.toLowerCase();
   }
 
+  let tokenClient = null;
   let accessToken = null;        // in-memory only — never persisted
+  let pendingTokenResolve = null;
+  let refreshInFlight = null;
   let spreadsheetId = localStorage.getItem(SPREADSHEET_ID_KEY);
   const tripHeaderMapCache = {}; // trip name -> { headerName: columnIndex }
 
-  // ---- Auth: full-page redirect, not a pop-up ----
-  //
-  // This app originally used Google Identity Services' pop-up token model
-  // (google.accounts.oauth2.initTokenClient). That works fine on desktop
-  // but iOS Safari has no reliable in-page way to grant pop-up access mid-
-  // flow (unlike desktop Chrome's address-bar icon) — a blocked pop-up on
-  // iPhone was a dead end with no recourse. A top-level redirect to
-  // Google's own authorize endpoint isn't a pop-up at all, so it can't be
-  // blocked the same way, and works identically across every browser.
-  //
-  // response_type=token is the OAuth 2.0 implicit flow for client-side-
-  // only apps (see Google's "OAuth 2.0 for Client-side Web Applications"
-  // guide) — appropriate here specifically because this is a static site
-  // with no backend to exchange an authorization code for a token.
-  const SILENT_ATTEMPTED_KEY = "travel_expenses_silent_auth_attempted"; // sessionStorage — prevents an infinite silent-redirect loop within one tab session
-
-  function computeRedirectUri() {
-    return location.origin + location.pathname;
-  }
-
-  function redirectToGoogle(promptMode) {
-    savePendingFormState(); // the whole page is about to unload — preserve any in-progress form first
-    const params = new URLSearchParams({
+  function initGoogleAuth() {
+    tokenClient = google.accounts.oauth2.initTokenClient({
       client_id: CLIENT_ID,
-      redirect_uri: computeRedirectUri(),
-      response_type: "token",
       scope: SHEETS_SCOPE,
-      include_granted_scopes: "true",
-      prompt: promptMode, // "consent" for an explicit Sign in/Reconnect click, "none" for the once-per-tab silent attempt
+      callback: (resp) => {
+        if (resp && resp.access_token) {
+          accessToken = resp.access_token;
+          hideConnectionBanner();
+        }
+        if (pendingTokenResolve) {
+          const resolve = pendingTokenResolve;
+          pendingTokenResolve = null;
+          resolve(!!(resp && resp.access_token));
+        }
+      },
     });
-    location.assign(`https://accounts.google.com/o/oauth2/v2/auth?${params.toString()}`);
   }
 
-  function beginGoogleSignIn() {
-    redirectToGoogle("consent");
+  // Wraps a single requestAccessToken() call in a promise resolved by the
+  // tokenClient's one shared callback above (GIS supports only one
+  // callback per client, so every caller — sign-in button, reconnect
+  // button, silent 401 refresh — goes through this same choke point).
+  function requestToken(promptMode) {
+    return new Promise((resolve) => {
+      pendingTokenResolve = resolve;
+      tokenClient.requestAccessToken({ prompt: promptMode });
+    });
   }
 
-  // Reads the access token (or error) out of the URL fragment Google
-  // redirects back with, and immediately strips it from the address bar —
-  // a bearer token has no business sitting in the URL/history/bookmarks
-  // a moment longer than it takes to read it into memory.
-  function consumeAuthRedirectResult() {
-    if (!location.hash) return null;
-    const params = new URLSearchParams(location.hash.slice(1));
-    const token = params.get("access_token");
-    const error = params.get("error");
-    if (!token && !error) return null; // a hash present for some other reason — not ours
-    history.replaceState(null, "", location.pathname + location.search);
-    if (token) return { token };
-    return { error: error || "access_denied" };
+  function silentTokenRefresh() {
+    if (refreshInFlight) return refreshInFlight;
+    refreshInFlight = requestToken("").finally(() => { refreshInFlight = null; });
+    return refreshInFlight;
   }
 
-  function describeAuthError(code) {
-    if (code === "access_denied") return "Sign-in was cancelled.";
-    return `Sign-in failed (${code}).`;
+  const POPUP_TIMEOUT_MS = 12000;
+
+  function popupBlockedError() {
+    return new Error(
+      'No response from the Google sign-in window after 12 seconds — your browser likely blocked the pop-up. ' +
+      'Check the address bar for a blocked pop-up icon, allow pop-ups for this site, then try again.'
+    );
+  }
+
+  // requestToken("consent") opens a visible pop-up, so — unlike the silent
+  // prompt:"" refresh above — it can go quiet forever with no callback at
+  // all if the browser blocks the pop-up outright (rather than the user
+  // just closing it, which does still fire a callback). Racing it against
+  // a timeout is what turns that silent hang into an actual message
+  // instead of a button that looks stuck on "Connecting…" indefinitely.
+  function requestTokenInteractive() {
+    return new Promise((resolve, reject) => {
+      let settled = false;
+      const timer = setTimeout(() => {
+        if (settled) return;
+        settled = true;
+        reject(popupBlockedError());
+      }, POPUP_TIMEOUT_MS);
+
+      requestToken("consent").then(
+        (ok) => {
+          if (settled) return;
+          settled = true;
+          clearTimeout(timer);
+          resolve(ok);
+        },
+        (err) => {
+          if (settled) return;
+          settled = true;
+          clearTimeout(timer);
+          reject(err);
+        }
+      );
+    });
   }
 
   function authFailureError(message) {
@@ -1496,14 +1526,14 @@ tr.row-new { animation: highlight-row 1.6s ease-out; }
 
     // Google's API returns 401 for a missing/expired token in most cases,
     // but has also been observed returning 403 for the same "no valid
-    // credentials" situation. Either way, there's no in-page silent retry
-    // anymore (that was the pop-up model's job) — refreshing a token now
-    // means a full-page redirect, which is too disruptive to fire
-    // automatically out from under a user who's mid-action. Straight to
-    // the reconnect banner; savePendingFormState() (inside
-    // redirectToGoogle, called when they click it) preserves whatever
-    // they were doing across the round-trip.
-    const res = await doFetch();
+    // credentials" situation (an empty/placeholder Authorization header is
+    // not always distinguishable from a permissions problem on their end)
+    // — so both trigger the same silent-refresh-then-reconnect handling.
+    let res = await doFetch();
+    if (res.status === 401 || res.status === 403) {
+      const refreshed = await silentTokenRefresh();
+      if (refreshed) res = await doFetch();
+    }
     if (res.status === 401 || res.status === 403) {
       showConnectionBanner("Google connection expired.", "Reconnect to Google", onReconnectClick);
       throw authFailureError("Google session expired. Please reconnect.");
@@ -1526,13 +1556,14 @@ tr.row-new { animation: highlight-row 1.6s ease-out; }
       headers: { Authorization: `Bearer ${accessToken || ""}`, "Content-Type": "application/json" },
       body: JSON.stringify({ properties: { title: DEFAULT_SPREADSHEET_TITLE } }),
     });
-    const res = await doCreate();
+    let res = await doCreate();
     if (res.status === 401 || res.status === 403) {
-      showConnectionBanner("Google connection expired.", "Reconnect to Google", onReconnectClick);
-      throw authFailureError("Google session expired. Please reconnect.");
+      const refreshed = await silentTokenRefresh();
+      if (refreshed) res = await doCreate();
     }
     const body = await res.json().catch(() => null);
     if (!res.ok) {
+      if (res.status === 401 || res.status === 403) throw authFailureError("Google session expired. Please reconnect.");
       throw new Error((body && body.error && body.error.message) || `Request failed (${res.status})`);
     }
     return body.spreadsheetId;
@@ -1554,8 +1585,12 @@ tr.row-new { animation: highlight-row 1.6s ease-out; }
       `https://www.googleapis.com/drive/v3/files?q=${q}&fields=${fields}&orderBy=modifiedTime desc`,
       { headers: { Authorization: `Bearer ${accessToken || ""}` } }
     );
-    const res = await doList();
-    if (!res.ok) return null; // 401/403 (no in-page retry anymore — see sheetsFetch), Drive API not enabled, scope not granted, network hiccup, etc. — fail open into the manual chooser
+    let res = await doList();
+    if (res.status === 401 || res.status === 403) {
+      const refreshed = await silentTokenRefresh();
+      if (refreshed) res = await doList();
+    }
+    if (!res.ok) return null; // Drive API not enabled, scope not granted, network hiccup, etc. — fail open into the manual chooser
     const body = await res.json().catch(() => null);
     const files = (body && body.files) || [];
     if (files.length === 1) return files[0].id;
@@ -2066,63 +2101,34 @@ tr.row-new { animation: highlight-row 1.6s ease-out; }
     populateCategorySelect();
     populateCurrencySelect();
     wireStaticEvents();
+    initGoogleAuth();
     syncRateHistoryOnLoad();
 
-    // Consumed unconditionally, before anything else: whether we're
-    // returning from an explicit Sign in click, a Reconnect click, or a
-    // once-per-tab silent attempt, the token/error lives in the URL
-    // fragment and needs to come out of the address bar immediately
-    // either way.
-    const hashResult = consumeAuthRedirectResult();
-    if (hashResult && hashResult.token) {
-      accessToken = hashResult.token;
-      sessionStorage.removeItem(SILENT_ATTEMPTED_KEY);
-    }
-
     if (!spreadsheetId) {
-      if (hashResult && hashResult.token) {
-        // Just returned from an explicit "Sign in with Google" during
-        // setup — look for the default spreadsheet before falling back
-        // to the manual "paste a URL / create one" chooser.
-        await runDefaultSpreadsheetLookup();
-        return;
-      }
       el("setup-gate").hidden = false;
-      if (hashResult && hashResult.error) {
-        showError(el("setup-error"), describeAuthError(hashResult.error));
-      }
       return;
     }
 
-    if (!accessToken) {
-      if (hashResult && hashResult.error) {
-        // A silent or interactive attempt came back negative — ask for an
-        // explicit click rather than looping back through Google again.
-        showConnectionBanner("Sign in to load your trips.", "Sign in with Google", beginGoogleSignIn);
-        return;
-      }
-      if (!sessionStorage.getItem(SILENT_ATTEMPTED_KEY)) {
-        // A page refresh always starts with accessToken === null — it's
-        // intentionally never persisted — so a returning user gets one
-        // silent, no-click redirect attempt per tab session before
-        // falling back to an explicit button. Works with no visible
-        // interaction as long as they're still signed in to Google and
-        // have already granted this app consent.
-        sessionStorage.setItem(SILENT_ATTEMPTED_KEY, "1");
-        redirectToGoogle("none");
-        return;
-      }
-      showConnectionBanner("Sign in to load your trips.", "Sign in with Google", beginGoogleSignIn);
+    // A page refresh always starts with accessToken === null — it's
+    // intentionally never persisted — so the very first thing done with a
+    // known spreadsheet id is to try to obtain a token *before* any Sheets
+    // API call fires. prompt: "" asks silently, with no popup, and
+    // succeeds with no user action as long as they're still signed in to
+    // Google in this browser and have already granted this app consent.
+    const gotToken = await requestToken("");
+    if (!gotToken) {
+      // No popup was shown (silent request just came back empty) — the
+      // user needs to click through an interactive sign-in instead of
+      // staring at an empty/broken dashboard.
+      showConnectionBanner("Sign in to load your trips.", "Sign in with Google", onInitialSignInClick);
       return;
     }
-
     await loadTripsAfterAuth();
   }
 
   async function loadTripsAfterAuth() {
     try {
       await refreshTripList();
-      restorePendingFormStateIfAny();
     } catch (err) {
       // An authFailure already showed the reconnect banner (from inside
       // sheetsFetch); any other error (bad/deleted spreadsheet id, no
@@ -2133,29 +2139,23 @@ tr.row-new { animation: highlight-row 1.6s ease-out; }
     }
   }
 
-  // The part of the old onSetupSignIn() that used to run after a
-  // successful pop-up grant — now runs here instead, since a redirect-
-  // based sign-in reloads the whole page and init() is where execution
-  // picks back up.
-  async function runDefaultSpreadsheetLookup() {
-    el("setup-gate").hidden = false;
-    el("setup-signin-btn").hidden = true;
-    el("setup-signin-checking").hidden = false;
+  async function onInitialSignInClick() {
+    const btn = el("connection-banner-btn");
+    btn.disabled = true;
     try {
-      const defaultId = await findDefaultSpreadsheet();
-      if (defaultId) {
-        spreadsheetId = defaultId;
-        localStorage.setItem(SPREADSHEET_ID_KEY, defaultId);
-        await enterApp();
-        return;
+      const ok = await requestTokenInteractive();
+      if (ok) {
+        hideConnectionBanner();
+        await loadTripsAfterAuth();
       }
     } catch (err) {
-      // Fall through to the manual chooser below — a failed lookup should
-      // never block setup entirely, just skip the auto-connect shortcut.
+      // Popup-blocked (or any other) failure — surface it right on the
+      // banner instead of leaving the button looking stuck with no
+      // explanation of what to do next.
+      el("connection-banner-text").textContent = err.message || "Sign in to load your trips.";
     } finally {
-      el("setup-signin-checking").hidden = true;
+      btn.disabled = false;
     }
-    el("setup-connect-fields").hidden = false;
   }
 
   // ---- Theme (light / dark) — preference lives in localStorage only,
@@ -2978,65 +2978,6 @@ tr.row-new { animation: highlight-row 1.6s ease-out; }
   function openModal(id) { el(id).hidden = false; }
   function closeModal(id) { el(id).hidden = true; }
 
-  // ---- Preserving an in-progress form across the sign-in/reconnect
-  // redirect. A full-page redirect (unlike the old pop-up) throws away
-  // every bit of in-memory JS state, including whatever a user was mid-
-  // typing into the Add Expense or New Trip modal — so anything open gets
-  // snapshotted to sessionStorage right before navigating away, and
-  // restored (modal reopened, fields refilled) once the app is back and
-  // signed in. Never silently drop typed data just because the token
-  // happened to expire mid-edit. ----
-
-  const PENDING_FORM_KEY = "travel_expenses_pending_form";
-
-  function savePendingFormState() {
-    if (!el("add-expense-modal").hidden) {
-      sessionStorage.setItem(PENDING_FORM_KEY, JSON.stringify({
-        modal: "add-expense-modal",
-        trip: activeTrip,
-        date: el("expense-date").value,
-        category: el("expense-category").value,
-        currency: el("expense-currency").value,
-        amount: el("expense-amount").value,
-        notes: el("expense-notes").value,
-      }));
-    } else if (!el("new-trip-modal").hidden) {
-      sessionStorage.setItem(PENDING_FORM_KEY, JSON.stringify({
-        modal: "new-trip-modal",
-        name: el("new-trip-name").value,
-        currency: el("new-trip-currency").value,
-      }));
-    } else {
-      sessionStorage.removeItem(PENDING_FORM_KEY);
-    }
-  }
-
-  // Called once a trip is selected and rendered, so an add-expense
-  // restore has somewhere valid to reopen into. A saved add-expense form
-  // is only restored for the *same* trip it was opened against — if that
-  // trip somehow isn't the one now active, silently dropping the restore
-  // is safer than reopening it against the wrong trip's categories/data.
-  function restorePendingFormStateIfAny() {
-    const raw = sessionStorage.getItem(PENDING_FORM_KEY);
-    if (!raw) return;
-    sessionStorage.removeItem(PENDING_FORM_KEY);
-    let saved;
-    try { saved = JSON.parse(raw); } catch (e) { return; }
-    if (saved.modal === "add-expense-modal" && saved.trip === activeTrip) {
-      openModal("add-expense-modal");
-      el("expense-date").value = saved.date;
-      el("expense-category").value = saved.category;
-      el("expense-currency").value = saved.currency;
-      el("expense-amount").value = saved.amount;
-      el("expense-notes").value = saved.notes;
-      updateConversionLine();
-    } else if (saved.modal === "new-trip-modal") {
-      openModal("new-trip-modal");
-      el("new-trip-name").value = saved.name;
-      el("new-trip-currency").value = saved.currency;
-    }
-  }
-
   // ---- Connection banner — a small persistent bar (not a blocking modal)
   // used for two distinct situations: a silent token refresh failed
   // (needs the user to click Reconnect), or the saved spreadsheet id
@@ -3056,8 +2997,23 @@ tr.row-new { animation: highlight-row 1.6s ease-out; }
     el("connection-banner").hidden = true;
   }
 
-  function onReconnectClick() {
-    beginGoogleSignIn();
+  async function onReconnectClick() {
+    const btn = el("connection-banner-btn");
+    btn.disabled = true;
+    try {
+      const ok = await requestTokenInteractive();
+      if (ok) {
+        hideConnectionBanner();
+        await loadTripsAfterAuth();
+      }
+    } catch (err) {
+      // Popup-blocked (or any other) failure — surface it right on the
+      // banner instead of leaving the button looking stuck with no
+      // explanation of what to do next.
+      el("connection-banner-text").textContent = err.message || "Google connection expired.";
+    } finally {
+      btn.disabled = false;
+    }
   }
 
   function onDisconnectClick() {
@@ -3073,12 +3029,47 @@ tr.row-new { animation: highlight-row 1.6s ease-out; }
     el("setup-saving-indicator").classList.toggle("visible", busy);
   }
 
-  function onSetupSignIn() {
-    // Redirects immediately — the rest of what used to happen here after
-    // a successful sign-in (looking for the default spreadsheet) now
-    // lives in runDefaultSpreadsheetLookup(), called from init() once the
-    // page reloads and comes back with a token in the URL fragment.
-    beginGoogleSignIn();
+  async function onSetupSignIn() {
+    const errorEl = el("setup-error");
+    const btn = el("setup-signin-btn");
+    const waitingEl = el("setup-signin-waiting");
+    errorEl.classList.remove("visible");
+    btn.disabled = true;
+    waitingEl.hidden = false; // immediate feedback — otherwise a blocked pop-up reads as "did my click even register?" for the full 12s below
+    let ok;
+    try {
+      ok = await requestTokenInteractive();
+    } catch (err) {
+      waitingEl.hidden = true;
+      btn.disabled = false;
+      showError(errorEl, err.message || "Sign-in failed.");
+      return;
+    }
+    waitingEl.hidden = true;
+    btn.disabled = false;
+    if (!ok) { showError(errorEl, "Sign-in was cancelled or failed."); return; }
+
+    btn.hidden = true;
+
+    // Signed in — before showing the manual "paste a URL / create one"
+    // chooser, look for this app's own spreadsheet by name so a user who
+    // already has one never has to touch that chooser at all.
+    el("setup-signin-checking").hidden = false;
+    try {
+      const defaultId = await findDefaultSpreadsheet();
+      if (defaultId) {
+        spreadsheetId = defaultId;
+        localStorage.setItem(SPREADSHEET_ID_KEY, defaultId);
+        await enterApp();
+        return;
+      }
+    } catch (err) {
+      // Fall through to the manual chooser below — a failed lookup should
+      // never block setup entirely, just skip the auto-connect shortcut.
+    } finally {
+      el("setup-signin-checking").hidden = true;
+    }
+    el("setup-connect-fields").hidden = false;
   }
 
   async function onSetupConnect() {
