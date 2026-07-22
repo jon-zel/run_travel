@@ -1373,6 +1373,17 @@ input, select, textarea, button { font-family: inherit; }
 (function () {
   "use strict";
 
+  // Cap Chart.js's canvas resolution at 2x device pixels instead of the
+  // real devicePixelRatio (3 on most iPhones). Each chart canvas's backing
+  // store is (CSS width x DPR) x (CSS height x DPR) pixels, held in memory
+  // for as long as the chart exists; on trips with hundreds of expenses
+  // (long per-day line charts), iOS Safari has been seen to silently drop
+  // a canvas's contents under memory pressure — no error, no event, chart
+  // area just renders blank until the page is reloaded. 2x is still fully
+  // retina-sharp for line/doughnut charts and cuts that footprint by ~55%
+  // on 3x-DPR devices.
+  if (window.Chart) Chart.defaults.devicePixelRatio = Math.min(window.devicePixelRatio || 1, 2);
+
   // ============================================================
   // CONFIG — hardcoded (previously served by GET /api/config from
   // config.py). There's no server for this static build, so these are
