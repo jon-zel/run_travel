@@ -1,7 +1,9 @@
 <!--
 GOOGLE CLOUD SETUP — one-time, before first deploy of this file:
   1. Go to https://console.cloud.google.com/ and create a project (or reuse one).
-  2. APIs & Services > Library > enable "Google Sheets API".
+  2. APIs & Services > Library > enable "Google Sheets API" AND "Google Drive API"
+     (Drive API is only used read-only, to find this app's spreadsheet by name after
+     sign-in, with no "choose a sheet" step — see findDefaultSpreadsheet() below).
   3. APIs & Services > OAuth consent screen: User type "External", Publishing status
      "Testing", and add your own Google account under "Test users" (Testing-mode apps
      only let listed test users sign in — that's fine for a personal app).
@@ -792,14 +794,7 @@ tr.row-new { animation: highlight-row 1.6s ease-out; }
    ============================================================ */
 
 .setup-signin-row { display: flex; justify-content: center; }
-
-.setup-connect-fields { margin-top: var(--sp-6); }
-.setup-connect-fields .modal-field { max-width: 420px; margin: 0 auto var(--sp-4); text-align: left; }
-.setup-connect-fields .field-error { text-align: center; }
-.setup-connect-fields .setup-actions {
-  display: flex; gap: var(--sp-3); justify-content: center; flex-wrap: wrap; margin-top: var(--sp-3);
-}
-.setup-or { color: var(--text-faint); font-size: var(--fs-xs); text-transform: uppercase; letter-spacing: .04em; }
+#setup-error { text-align: center; }
 
 .connection-banner {
   display: flex;
@@ -864,24 +859,17 @@ tr.row-new { animation: highlight-row 1.6s ease-out; }
        no spreadsheet is connected yet (localStorage has no spreadsheet id). -->
   <section id="setup-gate" class="empty-state" hidden>
     <h2>Connect Google Sheets</h2>
-    <p>Sign in with Google, then connect a spreadsheet to store your trips in.</p>
+    <p>Sign in with Google — your trips are automatically stored in a "Travel Expenses"
+       spreadsheet in your own Google Drive. Nothing to pick or paste.</p>
     <div class="setup-signin-row">
       <button id="setup-signin-btn" class="btn btn-primary">Sign in with Google</button>
     </div>
-    <div id="setup-connect-fields" class="setup-connect-fields" hidden>
-      <div class="modal-field">
-        <label for="setup-sheet-url">Google Sheets URL</label>
-        <input type="text" id="setup-sheet-url" placeholder="https://docs.google.com/spreadsheets/d/...">
-      </div>
-      <div id="setup-error" class="field-error"></div>
-      <div class="setup-actions">
-        <button id="setup-connect-btn" class="btn btn-secondary">Connect</button>
-        <span class="setup-or">or</span>
-        <button id="setup-create-btn" class="btn">Create a spreadsheet for me</button>
-      </div>
-      <span id="setup-saving-indicator" class="saving-indicator" style="display:flex; justify-content:center; margin-top: var(--sp-3);">
-        <span class="spinner"></span> Connecting…
-      </span>
+    <div id="setup-error" class="field-error"></div>
+    <span id="setup-saving-indicator" class="saving-indicator" style="display:flex; justify-content:center; margin-top: var(--sp-4);">
+      <span class="spinner"></span> Setting up your spreadsheet…
+    </span>
+    <div class="setup-signin-row" style="margin-top: var(--sp-4);">
+      <button id="setup-retry-btn" class="btn" hidden>Try again</button>
     </div>
   </section>
 
@@ -1361,8 +1349,19 @@ tr.row-new { animation: highlight-row 1.6s ease-out; }
   // secret — this is a static site).
   // ============================================================
   const CLIENT_ID = '1065291210789-1if7o28onefirphe5n92r2jl0l5crg3f.apps.googleusercontent.com';
-  const SHEETS_SCOPE = "https://www.googleapis.com/auth/spreadsheets";
+  // drive.metadata.readonly is only used to search for this app's own
+  // spreadsheet by name right after sign-in (read-only file *metadata* —
+  // titles/ids/timestamps — never file contents of anything outside this
+  // app's own sheet). All actual reads/writes still go through the
+  // spreadsheets scope alone.
+  const SHEETS_SCOPE = "https://www.googleapis.com/auth/spreadsheets https://www.googleapis.com/auth/drive.metadata.readonly";
   const REQUIRED_HEADERS = ["Date", "Amount", "Category", "Notes"];
+
+  // The one spreadsheet this app ever uses, identified purely by name in
+  // the signed-in user's own Drive — there is no "choose/paste a sheet"
+  // step at all. Signing in is sufficient identification; the app finds
+  // this by name or creates it automatically.
+  const DEFAULT_SPREADSHEET_TITLE = "Travel Expenses";
 
   // A single reserved sheet tab (not a per-trip tab) holding one row per
   // trip: its note and its base currency. Its header row never matches
@@ -1376,16 +1375,6 @@ tr.row-new { animation: highlight-row 1.6s ease-out; }
   }
 
   const SPREADSHEET_ID_KEY = "travel_expenses_spreadsheet_id";
-  // Mirrors SPREADSHEET_ID_KEY on every successful connect, but — unlike
-  // it — is never cleared by Disconnect. Only used to prefill the manual
-  // "Google Sheets URL" field next time it's shown, so reconnecting to
-  // the same sheet doesn't mean hunting down the URL again.
-  const LAST_SPREADSHEET_ID_KEY = "travel_expenses_last_spreadsheet_id";
-
-  function rememberSpreadsheetId(id) {
-    localStorage.setItem(SPREADSHEET_ID_KEY, id);
-    localStorage.setItem(LAST_SPREADSHEET_ID_KEY, id);
-  }
 
   let tokenClient = null;
   let accessToken = null;        // in-memory only — never persisted
@@ -1500,7 +1489,7 @@ tr.row-new { animation: highlight-row 1.6s ease-out; }
     const doCreate = () => fetch("https://sheets.googleapis.com/v4/spreadsheets", {
       method: "POST",
       headers: { Authorization: `Bearer ${accessToken || ""}`, "Content-Type": "application/json" },
-      body: JSON.stringify({ properties: { title: "Travel Expenses" } }),
+      body: JSON.stringify({ properties: { title: DEFAULT_SPREADSHEET_TITLE } }),
     });
     let res = await doCreate();
     if (res.status === 401) {
@@ -1515,12 +1504,43 @@ tr.row-new { animation: highlight-row 1.6s ease-out; }
     return body.spreadsheetId;
   }
 
-  function extractSpreadsheetId(input) {
-    const text = (input || "").trim();
-    const match = text.match(/\/d\/([a-zA-Z0-9-_]+)/);
-    if (match) return match[1];
-    if (/^[a-zA-Z0-9-_]{20,}$/.test(text)) return text; // a bare ID, pasted directly
-    return null;
+  // Looks up this app's own spreadsheet by its canonical name in the
+  // signed-in user's Drive (the Sheets API itself has no "list my
+  // spreadsheets" endpoint) — this plus createSpreadsheet() above is the
+  // entire "which sheet" story: no URL to paste, no picker. Signing in is
+  // the only identification needed. If more than one match somehow exists
+  // (e.g. leftovers from testing), the most recently modified one is used
+  // — deterministic, no prompt.
+  async function findDefaultSpreadsheet() {
+    const q = encodeURIComponent(
+      `name = '${DEFAULT_SPREADSHEET_TITLE.replace(/'/g, "\\'")}' and mimeType = 'application/vnd.google-apps.spreadsheet' and trashed = false`
+    );
+    const fields = encodeURIComponent("files(id,name,modifiedTime)");
+    const doList = () => fetch(
+      `https://www.googleapis.com/drive/v3/files?q=${q}&fields=${fields}&orderBy=modifiedTime desc`,
+      { headers: { Authorization: `Bearer ${accessToken || ""}` } }
+    );
+    let res = await doList();
+    if (res.status === 401) {
+      const refreshed = await silentTokenRefresh();
+      if (refreshed) res = await doList();
+    }
+    if (!res.ok) {
+      // A failed search is NOT the same as a confirmed "nothing found" —
+      // treating them the same is what caused every failed search (Drive
+      // API not yet enabled, scope not granted, a network blip) to fall
+      // through to createSpreadsheet() and mint a brand new duplicate.
+      // Throwing here instead means autoConnectSpreadsheet() stops and
+      // surfaces the real error/Retry button — a spreadsheet only ever
+      // gets created after a search that actually completed and
+      // genuinely came back empty.
+      const body = await res.json().catch(() => null);
+      const message = (body && body.error && body.error.message) || `Drive search failed (${res.status})`;
+      throw new Error(`Couldn't check for an existing spreadsheet: ${message}`);
+    }
+    const body = await res.json().catch(() => null);
+    const files = (body && body.files) || [];
+    return files.length > 0 ? files[0].id : null;
   }
 
   function headerIndexMap(headerRow) {
@@ -1681,7 +1701,25 @@ tr.row-new { animation: highlight-row 1.6s ease-out; }
   // client JS. Far narrower blast radius than a whole-file overwrite
   // (one row, one trip, never another trip's data), and this app is
   // single-user/Testing-mode, so real locking isn't built for it.
-  async function upsertMetadataRow(tripName, fields, opts) {
+  // Serializes every metadata write, regardless of caller (a trip-creation
+  // currency write and a note-save write are otherwise completely
+  // independent — each does its own read-existing-rows-then-write cycle
+  // with no knowledge of the other). Without this, two writes for the
+  // *same trip* that happen to overlap can both read "no row yet" and
+  // both append, producing two rows for one trip — silently breaking the
+  // "one row per trip" invariant everything else here assumes, since a
+  // later read just picks whichever duplicate happens to sort last.
+  // Chaining guarantees a later write's read always sees every earlier
+  // write's result already landed.
+  let metadataWriteChain = Promise.resolve();
+
+  function upsertMetadataRow(tripName, fields, opts) {
+    const run = () => upsertMetadataRowNow(tripName, fields, opts);
+    metadataWriteChain = metadataWriteChain.then(run, run);
+    return metadataWriteChain;
+  }
+
+  async function upsertMetadataRowNow(tripName, fields, opts) {
     opts = opts || {};
     const fetchOpts = opts.keepalive ? { keepalive: true } : {};
 
@@ -2190,13 +2228,32 @@ tr.row-new { animation: highlight-row 1.6s ease-out; }
   let pendingNoteTrip = null; // which trip the debounced save below belongs to
   let pendingNoteText = null; // its text, captured at keystroke time
 
+  // Serializes every note write. upsertMetadataRow() does its own
+  // independent read-current-row-then-write cycle each call — if a pause
+  // mid-typing triggers an early autosave for a *partial* note, and the
+  // user then keeps typing and navigates away quickly, a second save (for
+  // the fuller text) could start before that first one's write actually
+  // lands on the sheet. With no ordering guarantee between two independent
+  // read/write cycles, the stale (shorter) save could land *after* the
+  // fresh one and silently clobber it — this is what caused "only one
+  // word saved" after typing two. Chaining through one promise guarantees
+  // a later save's read can only begin once the earlier save's write has
+  // fully finished, so the most recent edit always wins.
+  let noteSaveChain = Promise.resolve();
+
+  function saveTripNoteNow(tripName, text, opts) {
+    const run = () => doSaveTripNote(tripName, text, opts);
+    noteSaveChain = noteSaveChain.then(run, run);
+    return noteSaveChain;
+  }
+
   // Actually performs the write. `opts.keepalive` marks a best-effort save
   // fired from a page-unload handler: it can't be awaited for UI feedback
   // (the page may already be gone by the time any response arrives), so it
   // skips the retry loop and the Saved/error UI entirely and just gives
   // the browser the best chance of finishing the request in the
   // background via fetch's keepalive flag.
-  async function saveTripNoteNow(tripName, text, opts) {
+  async function doSaveTripNote(tripName, text, opts) {
     opts = opts || {};
     if (opts.keepalive) {
       try { await upsertMetadataRow(tripName, { notes: text }, { keepalive: true }); } catch (e) { /* best effort only */ }
@@ -2897,12 +2954,11 @@ tr.row-new { animation: highlight-row 1.6s ease-out; }
   }
 
   // ---- Setup gate (first launch / no spreadsheet connected yet) ----
-
-  function setSetupBusy(busy) {
-    el("setup-connect-btn").disabled = busy;
-    el("setup-create-btn").disabled = busy;
-    el("setup-saving-indicator").classList.toggle("visible", busy);
-  }
+  //
+  // No "choose a sheet" step at all: signing in is the only identification
+  // needed. After sign-in, autoConnectSpreadsheet() finds this app's own
+  // spreadsheet by name in the user's Drive, or creates it if it doesn't
+  // exist yet — never asks the user to paste a URL or pick one.
 
   async function onSetupSignIn() {
     const errorEl = el("setup-error");
@@ -2911,50 +2967,29 @@ tr.row-new { animation: highlight-row 1.6s ease-out; }
       const ok = await requestToken("consent");
       if (!ok) { showError(errorEl, "Sign-in was cancelled or failed."); return; }
       el("setup-signin-btn").hidden = true;
-      const urlField = el("setup-sheet-url");
-      const lastId = localStorage.getItem(LAST_SPREADSHEET_ID_KEY);
-      if (lastId && !urlField.value) {
-        urlField.value = `https://docs.google.com/spreadsheets/d/${lastId}/edit`;
-      }
-      el("setup-connect-fields").hidden = false;
+      await autoConnectSpreadsheet();
     } catch (err) {
       showError(errorEl, err.message || "Sign-in failed.");
     }
   }
 
-  async function onSetupConnect() {
+  async function autoConnectSpreadsheet() {
     const errorEl = el("setup-error");
+    const retryBtn = el("setup-retry-btn");
     errorEl.classList.remove("visible");
-    const id = extractSpreadsheetId(el("setup-sheet-url").value);
-    if (!id) { showError(errorEl, "Enter a valid Google Sheets URL."); return; }
-    setSetupBusy(true);
-    const previousId = spreadsheetId;
-    spreadsheetId = id;
+    retryBtn.hidden = true;
+    el("setup-saving-indicator").classList.add("visible");
     try {
-      await sheetsGet("?fields=" + encodeURIComponent("spreadsheetId")); // verifies access before committing to localStorage
-      rememberSpreadsheetId(id);
-      await enterApp();
-    } catch (err) {
-      spreadsheetId = previousId;
-      showError(errorEl, err.message || "Could not connect to that spreadsheet.");
-    } finally {
-      setSetupBusy(false);
-    }
-  }
-
-  async function onSetupCreate() {
-    const errorEl = el("setup-error");
-    errorEl.classList.remove("visible");
-    setSetupBusy(true);
-    try {
-      const id = await createSpreadsheet();
+      let id = await findDefaultSpreadsheet();
+      if (!id) id = await createSpreadsheet();
       spreadsheetId = id;
-      rememberSpreadsheetId(id);
+      localStorage.setItem(SPREADSHEET_ID_KEY, id);
       await enterApp();
     } catch (err) {
-      showError(errorEl, err.message || "Could not create a spreadsheet.");
+      showError(errorEl, err.message || "Could not set up your spreadsheet.");
+      retryBtn.hidden = false;
     } finally {
-      setSetupBusy(false);
+      el("setup-saving-indicator").classList.remove("visible");
     }
   }
 
@@ -3061,9 +3096,7 @@ tr.row-new { animation: highlight-row 1.6s ease-out; }
 
     // NEW — Google Sheets setup gate + disconnect
     el("setup-signin-btn").addEventListener("click", onSetupSignIn);
-    el("setup-connect-btn").addEventListener("click", onSetupConnect);
-    el("setup-create-btn").addEventListener("click", onSetupCreate);
-    el("setup-sheet-url").addEventListener("keydown", (e) => { if (e.key === "Enter") onSetupConnect(); });
+    el("setup-retry-btn").addEventListener("click", autoConnectSpreadsheet);
     el("disconnect-link").addEventListener("click", onDisconnectClick);
   }
 
