@@ -645,7 +645,7 @@ th {
 tr:last-child td { border-bottom: none; }
 tbody tr { transition: background-color .12s ease; }
 tbody tr:hover { background: var(--surface-alt); }
-td.amount-col { text-align: right; }
+.amount-col { text-align: right; }
 td.notes-col { color: var(--text); }
 
 tr.row-new { animation: highlight-row 1.6s ease-out; }
@@ -867,6 +867,8 @@ input, select, textarea, button { font-family: inherit; }
 
 @media (max-width: 640px) {
   .page { padding-inline: 16px; }
+  .header-actions { width: 100%; }
+  #add-expense-btn { margin-inline-start: auto; }
   .summary-grid,
   .charts-grid {
     grid-template-columns: 1fr;
