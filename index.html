@@ -142,15 +142,24 @@ body {
 }
 
 /* A faint fixed world-map/flight-path wash behind the page — ambience in
-   the gutters only, cards always sit on their own opaque --panel fill. */
-:root body {
+   the gutters only, cards always sit on their own opaque --panel fill.
+   Painted on a fixed, viewport-sized layer rather than with
+   background-attachment:fixed on <body>: iOS Safari ignores
+   attachment:fixed, so `cover` was sizing the map to the whole (very
+   tall) page and it rendered as a blurry, hugely zoomed-in smear on
+   phones. */
+body::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  z-index: -1;
+  pointer-events: none;
   background-image: linear-gradient(rgba(250, 246, 236, .65), rgba(250, 246, 236, .82)), url("bg-light-map.png");
   background-size: cover;
   background-position: center top;
-  background-attachment: fixed;
   background-repeat: no-repeat;
 }
-:root[data-theme="dark"] body {
+:root[data-theme="dark"] body::before {
   background-image: linear-gradient(rgba(27, 23, 18, .6), rgba(27, 23, 18, .78)), url("bg-dark-map.jpg");
 }
 
@@ -273,10 +282,13 @@ label {
    only other place, besides the primary CTA and gauge fill, that gets
    the accent. */
 .trip-selector-wrap { position: relative; }
+/* The dot sits inside the select's own left padding — it used to hang
+   14px outside the control, which on a phone put it in the page gutter
+   detached from anything. */
 .trip-selector-wrap::before {
   content: "";
   position: absolute;
-  left: -14px;
+  left: 12px;
   top: 50%;
   transform: translateY(-50%);
   width: 6px;
@@ -284,7 +296,10 @@ label {
   border-radius: 50%;
   background: var(--amber);
   border: 1px solid var(--border-strong);
+  pointer-events: none;
+  z-index: 1;
 }
+#trip-select { padding-left: 26px; max-width: 100%; }
 
 /* ---------- Range selector ---------- */
 
@@ -708,32 +723,45 @@ tr.row-new { animation: highlight-row 1.6s ease-out; }
   margin-top: var(--sp-2);
 }
 
-.divide-toggle {
-  font-size: var(--fs-xs);
-  color: var(--text-muted);
-  background: none;
-  border: none;
-  cursor: pointer;
-  text-decoration: underline;
-  padding: 0;
-  margin-top: var(--sp-2);
-  transition: color .15s ease;
-}
-.divide-toggle:hover { color: var(--text); }
+/* Every input in a form modal spans its column — content-width fields
+   looked unfinished, and on a phone left a ragged right edge. */
+.modal input[type="text"], .modal input[type="number"], .modal select, .modal .date-picker { width: 100%; }
+.modal-row > .currency-field { flex: 0 0 104px; }
 
-.divide-panel {
-  display: none;
-  align-items: center;
-  gap: var(--sp-2);
-  margin-top: var(--sp-3);
-  background: var(--surface-alt);
+/* A checkbox with a title and a one-line explanation. Overrides the
+   global uppercase field-label style, which is for field captions only. */
+label.toggle-row {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--sp-3);
+  text-transform: none;
+  letter-spacing: 0;
+  font-size: var(--fs-base);
+  font-weight: 400;
+  color: var(--text);
+  margin: 0;
+  padding: var(--sp-3);
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
-  padding: var(--sp-3);
-  transition: background-color .2s ease, border-color .2s ease;
+  background: var(--surface-alt);
+  cursor: pointer;
 }
-.divide-panel.visible { display: flex; }
-.divide-panel input { width: 112px; min-width: 0; }
+label.toggle-row input { margin: 3px 0 0; width: 18px; height: 18px; flex: none; accent-color: var(--amber); }
+label.toggle-row strong { display: block; font-weight: 600; }
+label.toggle-row small { display: block; color: var(--text-muted); font-size: var(--fs-sm); margin-top: 2px; }
+.toggle-stack { display: flex; flex-direction: column; gap: var(--sp-2); margin: var(--sp-4) 0; }
+
+.split-panel {
+  margin-top: var(--sp-2);
+  padding: var(--sp-3);
+  border: 1px dashed var(--border-strong);
+  border-radius: var(--radius-sm);
+}
+.split-panel .seg { margin-bottom: var(--sp-3); }
+.split-panel .modal-field { margin-bottom: var(--sp-3); }
+.split-preview { font-size: var(--fs-sm); color: var(--text); line-height: 1.45; }
+.split-preview .muted { color: var(--text-muted); }
+.split-preview.error { color: var(--danger); }
 
 .field-error {
   color: var(--danger);
@@ -750,6 +778,267 @@ tr.row-new { animation: highlight-row 1.6s ease-out; }
   gap: var(--sp-2);
   margin-top: var(--sp-6);
 }
+
+.modal-actions-spacer { flex: 1 1 auto; }
+.btn-danger { background: var(--danger); border-color: var(--danger); color: #fff; }
+.btn-danger:hover { filter: brightness(1.08); }
+.btn-danger-ghost { border-color: transparent; background: transparent; box-shadow: none; color: var(--danger); padding-inline: var(--sp-3); }
+.btn-danger-ghost:hover { background: var(--danger-bg); box-shadow: none; }
+.modal-sm { max-width: 400px; }
+body.modal-open { overflow: hidden; }
+
+/* ---------- Filter bar ----------
+   Mirrors finance-tracker's Income & Expenses filter bar (§FILTER-BAR):
+   date range + a 3-way segment + a category checkbox popover on one row,
+   and every active filter shown as a removable chip on a second row with a
+   single "Clear filters". Date is the context every panel reads, so it is
+   not a chip and "Clear filters" leaves it alone. */
+.filter-bar { padding: var(--sp-4); }
+.filter-bar:hover { box-shadow: var(--shadow); }
+.filter-row { display: flex; flex-wrap: wrap; align-items: center; gap: var(--sp-3) var(--sp-4); }
+.filter-controls { display: flex; flex-wrap: wrap; align-items: center; gap: var(--sp-2); margin-left: auto; }
+.range-pill { white-space: nowrap; }
+.range-pill .lbl-short { display: none; }
+
+.seg {
+  display: inline-flex;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  overflow: hidden;
+  background: var(--surface-alt);
+}
+.seg-btn {
+  background: transparent;
+  border: none;
+  padding: var(--sp-2) var(--sp-3);
+  font-family: inherit;
+  font-size: var(--fs-sm);
+  font-weight: 600;
+  color: var(--text-muted);
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background-color .15s ease, color .15s ease;
+}
+.seg-btn + .seg-btn { border-left: 1px solid var(--border); }
+.seg-btn:hover { color: var(--text); }
+.seg-btn.active { background: var(--text); color: var(--panel); }
+
+.scope-picker { position: relative; }
+.scope-trigger {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-2);
+  font-family: inherit;
+  font-size: var(--fs-sm);
+  font-weight: 600;
+  padding: var(--sp-2) var(--sp-3);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--panel);
+  color: var(--text);
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background-color .15s ease, border-color .15s ease;
+}
+.scope-trigger:hover { background: var(--surface-alt); border-color: var(--border-strong); }
+.scope-trigger.has-selection { border-color: var(--amber); background: var(--amber-bg); }
+.scope-caret { width: 15px; height: 15px; flex: none; opacity: .7; transition: transform .2s ease; }
+.scope-trigger[aria-expanded="true"] .scope-caret { transform: rotate(180deg); }
+
+.filter-menu {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  z-index: 160;
+  min-width: 260px;
+  max-width: min(320px, calc(100vw - 32px));
+  max-height: 360px;
+  overflow-y: auto;
+  background: var(--panel);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-hover);
+  padding: var(--sp-1);
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.filter-menu[hidden] { display: none; }
+.filter-opt {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  width: 100%;
+  text-align: left;
+  background: none;
+  border: none;
+  color: var(--text);
+  font-family: inherit;
+  font-size: var(--fs-base);
+  padding: var(--sp-2) var(--sp-3);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  flex: none; /* load-bearing in a max-height flex column — see finance-tracker .scope-menu-item */
+}
+.filter-opt:hover { background: var(--surface-alt); }
+.filter-opt .box {
+  width: 16px; height: 16px; flex: none;
+  border: 1px solid var(--border-strong);
+  border-radius: 4px;
+  display: flex; align-items: center; justify-content: center;
+  color: var(--panel);
+}
+.filter-opt[aria-checked="true"] .box { background: var(--text); border-color: var(--text); }
+.filter-opt .box svg { width: 11px; height: 11px; opacity: 0; }
+.filter-opt[aria-checked="true"] .box svg { opacity: 1; }
+.filter-opt .swatch { width: 8px; height: 8px; border-radius: 50%; flex: none; }
+.filter-opt .opt-name { flex: 1 1 auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.filter-opt .opt-count { color: var(--text-faint); font-size: var(--fs-xs); flex: none; }
+/* "only" replaces double-click-to-solo, and unlike it is discoverable. */
+.filter-only {
+  flex: none; background: none; border: none; font-family: inherit;
+  font-size: var(--fs-xs); font-weight: 600; color: var(--amber);
+  cursor: pointer; padding: 2px 6px; border-radius: var(--radius-sm); opacity: 0;
+}
+.filter-opt:hover .filter-only, .filter-only:focus-visible { opacity: 1; }
+.filter-only:hover { background: var(--amber-bg); }
+@media (hover: none) { .filter-only { opacity: 1; } }
+/* Pinned to the bottom of the scrolling list so Done/Select none never
+   scroll out of reach. */
+.filter-menu-foot {
+  display: flex; align-items: center; justify-content: space-between; gap: var(--sp-3);
+  border-top: 1px solid var(--border); margin-top: var(--sp-1); padding: var(--sp-2) var(--sp-3); flex: none;
+  position: sticky; bottom: calc(-1 * var(--sp-1)); background: var(--panel);
+}
+
+.filter-active-row {
+  display: flex; flex-wrap: wrap; align-items: center; gap: var(--sp-2) var(--sp-3);
+  margin-top: var(--sp-3); padding-top: var(--sp-3); border-top: 1px solid var(--border);
+}
+.filter-active-row[hidden] { display: none; }
+.filter-active-label { font-size: var(--fs-xs); text-transform: uppercase; letter-spacing: .05em; color: var(--text-faint); font-weight: 600; }
+.scope-chips { display: flex; flex-wrap: wrap; gap: var(--sp-2); align-items: center; flex: 1 1 auto; }
+.scope-chip {
+  display: inline-flex; align-items: center; gap: 6px; font-family: inherit;
+  background: var(--amber-bg); border: 1px solid var(--amber); color: var(--text);
+  border-radius: var(--radius-sm); padding: 4px 10px; font-size: var(--fs-sm); font-weight: 600;
+  cursor: pointer; line-height: 1.35;
+}
+.scope-chip .chip-swatch { width: 8px; height: 8px; border-radius: 50%; flex: none; }
+.scope-chip svg { width: 12px; height: 12px; flex: none; opacity: .65; }
+.scope-chip:hover svg { opacity: 1; }
+.filter-clear { flex: none; }
+
+/* Funnel next to every panel title that reacts to the filters — and
+   nothing next to the ones that don't (total, gauges), so the scope rule is
+   visible without explanation. */
+.filter-badge { display: inline-flex; vertical-align: -2px; margin-left: 6px; color: var(--amber); }
+.filter-badge[hidden] { display: none; }
+.filter-badge svg { width: 13px; height: 13px; }
+
+/* Legend badges under the charts now add/remove a category filter rather
+   than hiding a line, so a selected one reads as selected. */
+.legend-badge.selected { border-color: var(--amber); background: var(--amber-bg); }
+.legend-badge.dimmed { opacity: .45; }
+
+.summary-line-amber { color: var(--amber); font-weight: 600; }
+.summary-selected { color: var(--text); font-weight: 600; }
+
+/* ---------- Expense table tools ---------- */
+
+.table-tools { display: flex; align-items: center; gap: var(--sp-2); }
+.sort-select-label { font-size: var(--fs-xs); color: var(--text-muted); font-weight: 600; text-transform: uppercase; letter-spacing: .04em; }
+.table-tools select { padding: var(--sp-2) var(--sp-3); font-size: var(--fs-sm); }
+
+.search-wrap { position: relative; margin-bottom: var(--sp-3); }
+.search-icon { position: absolute; left: 12px; top: 50%; transform: translateY(-50%); width: 16px; height: 16px; color: var(--text-faint); pointer-events: none; }
+.search-wrap input {
+  width: 100%;
+  font-family: inherit; font-size: var(--fs-base); color: var(--text);
+  background: var(--surface-alt); border: 1px solid var(--border); border-radius: var(--radius-sm);
+  padding: var(--sp-2) 40px var(--sp-2) 36px;
+  min-height: 40px;
+}
+.search-wrap input::-webkit-search-cancel-button { -webkit-appearance: none; }
+.search-clear {
+  position: absolute; right: 4px; top: 50%; transform: translateY(-50%);
+  border: none; background: none; color: var(--text-muted); font-size: 20px; line-height: 1;
+  cursor: pointer; padding: 4px 10px; border-radius: var(--radius-sm);
+}
+.search-clear:hover { color: var(--text); background: var(--surface-alt); }
+
+.table-empty { color: var(--text-muted); padding: var(--sp-6) var(--sp-3); text-align: center; }
+.table-empty[hidden] { display: none; }
+.table-empty .footer-link { margin-left: var(--sp-2); }
+
+.th-sort {
+  display: inline-flex; align-items: center; gap: 4px;
+  background: none; border: none; padding: 0; cursor: pointer;
+  font: inherit; color: inherit; text-transform: inherit; letter-spacing: inherit;
+}
+.th-sort:hover { color: var(--text); }
+.th-sort .sort-arrow { font-size: 10px; opacity: 0; }
+th[aria-sort] .th-sort { color: var(--text); }
+th[aria-sort] .th-sort .sort-arrow { opacity: 1; }
+th.amount-col .th-sort { flex-direction: row-reverse; }
+
+.expense-table td.col-date { white-space: nowrap; color: var(--text-muted); }
+.expense-table td.col-amount { white-space: nowrap; font-weight: 600; }
+/* Category and notes may wrap (a hand-typed long category or an unbroken
+   note used to force the whole table wider than a tablet screen). */
+.expense-table td.col-category { min-width: 120px; overflow-wrap: anywhere; }
+.expense-table td.col-category .swatch { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 8px; vertical-align: 1px; }
+.expense-table td.col-notes { min-width: 120px; overflow-wrap: anywhere; }
+
+/* "Not final" — the amount is a placeholder until the real charge is known.
+   Clickable: one tap marks it final. */
+.status-badge {
+  display: inline-flex; align-items: center; gap: 5px; white-space: nowrap;
+  font-family: inherit; font-size: var(--fs-xs); font-weight: 700;
+  padding: 3px 9px; border-radius: 999px;
+  background: var(--amber-bg); color: var(--amber); border: 1px solid transparent;
+  cursor: pointer;
+}
+.status-badge::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
+.status-badge:hover { border-color: var(--amber); }
+.status-badge:disabled { opacity: .6; cursor: default; }
+.status-final { font-size: var(--fs-xs); color: var(--text-faint); }
+
+.row-actions-col { width: 1%; }
+td.row-actions { white-space: nowrap; text-align: right; }
+.icon-btn {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 32px; height: 32px; padding: 0;
+  border: 1px solid var(--border); border-radius: var(--radius-sm);
+  background: var(--panel); color: var(--text-muted); cursor: pointer;
+  transition: background-color .15s ease, color .15s ease, border-color .15s ease;
+}
+.icon-btn + .icon-btn { margin-left: 6px; }
+.icon-btn:hover { background: var(--surface-alt); color: var(--text); border-color: var(--border-strong); }
+.icon-btn.danger:hover { background: var(--danger-bg); color: var(--danger); border-color: var(--danger); }
+.icon-btn svg { width: 15px; height: 15px; }
+
+.show-all-btn { display: block; margin: var(--sp-3) auto 0; }
+.table-note { font-size: var(--fs-xs); color: var(--text-faint); margin-top: var(--sp-3); }
+
+/* ---------- Toast ---------- */
+.toast {
+  position: fixed;
+  left: 50%;
+  bottom: calc(24px + env(safe-area-inset-bottom));
+  transform: translateX(-50%);
+  z-index: 300;
+  max-width: min(440px, calc(100vw - 32px));
+  background: var(--text);
+  color: var(--panel);
+  padding: var(--sp-3) var(--sp-4);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-modal);
+  font-size: var(--fs-sm);
+  font-weight: 600;
+}
+.toast.error { background: var(--danger); color: #fff; }
+.toast[hidden] { display: none; }
 
 /* ---------- Rate history table ---------- */
 
@@ -801,18 +1090,30 @@ tr.row-new { animation: highlight-row 1.6s ease-out; }
 .setup-signin-row { display: flex; justify-content: center; }
 #setup-error { text-align: center; }
 
+/* Floats at the top of the viewport, above every dialog: a session can
+   expire while the expense form is open, and the Reconnect button used to
+   sit behind that form's overlay — unreachable without cancelling (and
+   losing) what had been typed. Opaque panel fill under the amber tint so
+   it stays readable over whatever it floats above. */
 .connection-banner {
+  position: fixed;
+  top: calc(12px + env(safe-area-inset-top));
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 280;
+  width: min(600px, calc(100vw - 24px));
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: var(--sp-4);
+  gap: var(--sp-3) var(--sp-4);
   flex-wrap: wrap;
-  background: var(--amber-bg);
+  background: linear-gradient(var(--amber-bg), var(--amber-bg)), var(--panel);
   border: 1px solid var(--amber);
   border-radius: var(--radius-md);
   padding: var(--sp-3) var(--sp-4);
-  margin-bottom: var(--sp-5);
+  box-shadow: var(--shadow-modal);
 }
+.connection-banner[hidden] { display: none; }
 .connection-banner-text { font-size: var(--fs-sm); color: var(--text); }
 
 .saving-indicator {
@@ -849,32 +1150,151 @@ input, select, textarea, button { font-family: inherit; }
 @media (hover: hover) { .btn:hover { opacity: .85; } }
 
 @media (pointer: coarse) and (max-width: 900px) {
-  input, select, textarea, button { font-size: 16px; }
+  /* 16px stops iOS Safari zooming the page when a field gets focus — only
+     form fields need it, not buttons. The selectors must be at least as
+     specific as the base `input[type="number"]` rule (15px), or that rule
+     wins and every tap on a field zooms the page on an iPhone. */
+  input[type="text"], input[type="number"], input[type="search"], select, textarea,
+  .search-wrap input { font-size: 16px; }
   button, a.btn, .clickable {
     min-height: 44px;
     touch-action: manipulation;
     -webkit-tap-highlight-color: transparent;
   }
+  /* Small inline controls keep their compact size (they sit inside a row
+     that is itself the tap target, or are already spaced for touch). */
+  .status-badge, .filter-only, .scope-chip, .date-picker-day, .date-picker-nav, .search-clear, .th-sort { min-height: 0; }
+  .scope-chip { min-height: 34px; }
   .date-picker-panel {
-    width: min(240px, calc(100vw - 32px));
-  }
-  .divide-panel input {
-    width: auto;
-    flex: 1 1 0;
-    min-width: 0;
+    width: min(260px, calc(100vw - 32px));
   }
 }
 
+/* ---------- Phone layout ---------- */
 @media (max-width: 640px) {
-  .page { padding-inline: 16px; }
-  .header-actions { width: 100%; }
-  #add-expense-btn { margin-inline-start: auto; }
-  .summary-grid,
-  .charts-grid {
-    grid-template-columns: 1fr;
+  /* Bottom padding leaves room for the floating Add button. */
+  .page { padding: var(--sp-4) 16px calc(104px + env(safe-area-inset-bottom)); }
+  .section { margin-top: var(--sp-4); }
+  .card { padding: var(--sp-4); }
+
+  .app-header { gap: var(--sp-3); margin-bottom: var(--sp-4); }
+  .wordmark { font-size: var(--fs-lg); }
+  .header-actions { width: 100%; flex-wrap: nowrap; }
+  .trip-selector-wrap { flex: 1 1 auto; min-width: 0; }
+  #trip-select { width: 100%; }
+  /* Add Expense becomes a floating button within thumb reach. */
+  #add-expense-btn {
+    position: fixed;
+    right: 16px;
+    bottom: calc(16px + env(safe-area-inset-bottom));
+    z-index: 90;
+    border-radius: 999px;
+    padding: 14px 22px;
+    font-size: var(--fs-md);
+    box-shadow: 0 8px 24px rgba(36, 31, 26, .3);
   }
-  .modal-row { flex-direction: column; }
-  .donut-layout { flex-direction: column; }
+  .toast { bottom: calc(88px + env(safe-area-inset-bottom)); }
+
+  /* Filter bar: date pills scroll sideways on one line instead of wrapping
+     a single orphan pill onto a second row; the status segment and the
+     Categories button share the next row. */
+  .filter-row { gap: var(--sp-3); }
+  .filter-row > .range-selector {
+    width: 100%;
+    flex-wrap: nowrap;
+    overflow-x: auto;
+    scrollbar-width: none;
+    -webkit-overflow-scrolling: touch;
+  }
+  .filter-row > .range-selector::-webkit-scrollbar { display: none; }
+  /* Short labels so all five pills fit one phone-width row — with the
+     long ones "Custom" sat off-screen and was easy to miss entirely. */
+  .filter-row > .range-selector { gap: 2px; }
+  .range-pill { flex: 1 0 auto; padding: var(--sp-2) 8px; }
+  .range-pill .lbl-long { display: none; }
+  .range-pill .lbl-short { display: inline; }
+  .filter-controls { margin-left: 0; width: 100%; flex-wrap: nowrap; }
+  .filter-controls .seg { flex: 1 1 auto; }
+  .filter-controls .seg-btn { flex: 1 1 0; padding-inline: var(--sp-2); }
+  /* The category popover becomes a bottom sheet: a 260px menu anchored to a
+     button near the left edge would run off-screen. */
+  .filter-menu {
+    position: fixed;
+    top: auto;
+    left: 12px;
+    right: 12px;
+    bottom: calc(12px + env(safe-area-inset-bottom));
+    max-width: none;
+    max-height: 65svh;
+    z-index: 260;
+    box-shadow: var(--shadow-modal);
+  }
+  .filter-opt { padding: var(--sp-3); }
+  .custom-range-fields > div { flex: 1 1 0; min-width: 0; }
+  .custom-range-fields .date-picker { width: 100%; }
+
+  .summary-grid, .charts-grid { grid-template-columns: 1fr; }
+  .gauges-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--sp-3); }
+  .gauge-value { font-size: var(--fs-lg); }
+  .chart-canvas-wrap { height: 220px; }
+  .chart-canvas-wrap.tall { height: 260px; }
+  .donut-layout { flex-direction: column; align-items: stretch; }
+  .chart-canvas-wrap.donut { width: 100%; flex: none; height: 240px; }
+  .donut-legend-list { max-height: none; }
+
+  .card-title-row { flex-wrap: wrap; align-items: center; }
+
+  /* Modals become bottom sheets with the action row pinned to the bottom,
+     so Save is always reachable above the keyboard-free area. */
+  .modal-overlay { align-items: flex-end; padding: 0; }
+  .modal {
+    max-width: none;
+    border-radius: var(--radius) var(--radius) 0 0;
+    padding: var(--sp-5) 16px 0;
+    max-height: 92svh;
+  }
+  .modal-actions {
+    position: sticky;
+    bottom: 0;
+    background: var(--panel);
+    margin: var(--sp-4) -16px 0;
+    padding: var(--sp-3) 16px calc(var(--sp-3) + env(safe-area-inset-bottom));
+    border-top: 1px solid var(--border);
+    flex-wrap: wrap;
+  }
+  .modal > :last-child:not(.modal-actions) { margin-bottom: calc(var(--sp-5) + env(safe-area-inset-bottom)); }
+}
+
+/* ---------- Expense list as cards (phones and portrait tablets) ----------
+   Category + amount on top, date and status under them, notes last.
+   Tapping a card opens it for editing (Delete lives in that form), so the
+   row needs no icon column. Up to 820px, not just phone width: a 6-column
+   table needed sideways scrolling on a portrait tablet. Keep this
+   breakpoint in sync with CARD_TABLE_QUERY in the script. */
+@media (max-width: 820px) {
+  .table-wrap { overflow: visible; }
+  .expense-table thead { display: none; }
+  .expense-table, .expense-table tbody { display: block; }
+  .expense-table tr {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    grid-template-areas: "category amount" "date status" "notes notes";
+    column-gap: var(--sp-3);
+    row-gap: 3px;
+    padding: var(--sp-3) var(--sp-1);
+    border-bottom: 1px solid var(--border);
+    cursor: pointer;
+  }
+  .expense-table tr:last-child { border-bottom: none; }
+  .expense-table td { padding: 0; border: none; min-width: 0; }
+  .expense-table td.col-category { grid-area: category; font-weight: 600; overflow: hidden; text-overflow: ellipsis; }
+  .expense-table td.col-amount { grid-area: amount; text-align: right; font-weight: 700; }
+  .expense-table td.col-date { grid-area: date; font-size: var(--fs-sm); }
+  .expense-table td.col-status { grid-area: status; justify-self: end; }
+  .expense-table td.col-notes { grid-area: notes; min-width: 0; font-size: var(--fs-sm); color: var(--text-muted); overflow-wrap: anywhere; }
+  .expense-table td.col-notes:empty { display: none; }
+  .expense-table td.row-actions { display: none; }
+  .expense-table .status-final { display: none; }
 }
 </style>
 </head>
@@ -934,22 +1354,47 @@ input, select, textarea, button { font-family: inherit; }
   <!-- Main dashboard: shown once a trip is active -->
   <div id="dashboard" hidden>
 
-    <section class="section">
-      <div class="range-selector">
-        <button class="range-pill" data-range="all">All trip</button>
-        <button class="range-pill" data-range="week">This week</button>
-        <button class="range-pill" data-range="last7">Last 7 days</button>
-        <button class="range-pill" data-range="custom">Custom</button>
-        <div id="custom-range-fields" class="custom-range-fields">
-          <div>
-            <label for="custom-from">From</label>
-            <input type="date" id="custom-from">
+    <!-- Filter bar — one place for every filter, mirroring finance-tracker's
+         Income & Expenses bar. Every active filter is a removable chip, so
+         nothing can be filtered out without it being visible on screen. -->
+    <section class="section card filter-bar" id="filter-bar">
+      <div class="filter-row">
+        <div class="range-selector" role="group" aria-label="Date range">
+          <button class="range-pill" data-range="all"><span class="lbl-long">All trip</span><span class="lbl-short">All</span></button>
+          <button class="range-pill" data-range="today">Today</button>
+          <button class="range-pill" data-range="week"><span class="lbl-long">This week</span><span class="lbl-short">Week</span></button>
+          <button class="range-pill" data-range="last7"><span class="lbl-long">Last 7 days</span><span class="lbl-short">7 days</span></button>
+          <button class="range-pill" data-range="custom">Custom</button>
+        </div>
+        <div class="filter-controls">
+          <div class="seg" id="filter-status-seg" role="group" aria-label="Amount status">
+            <button type="button" class="seg-btn active" data-filter-status="all" aria-pressed="true">All</button>
+            <button type="button" class="seg-btn" data-filter-status="notFinal" aria-pressed="false">Not final</button>
+            <button type="button" class="seg-btn" data-filter-status="final" aria-pressed="false">Final</button>
           </div>
-          <div>
-            <label for="custom-to">To</label>
-            <input type="date" id="custom-to">
+          <div class="scope-picker" id="cat-picker">
+            <button type="button" class="scope-trigger" id="cat-trigger" aria-haspopup="dialog" aria-expanded="false">
+              <span id="cat-trigger-label">Categories</span>
+              <svg class="scope-caret" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 9l6 6 6-6"/></svg>
+            </button>
+            <div class="filter-menu" id="cat-menu" role="dialog" aria-label="Filter by category" hidden></div>
           </div>
         </div>
+      </div>
+      <div id="custom-range-fields" class="custom-range-fields">
+        <div>
+          <label for="custom-from">From</label>
+          <input type="date" id="custom-from">
+        </div>
+        <div>
+          <label for="custom-to">To</label>
+          <input type="date" id="custom-to">
+        </div>
+      </div>
+      <div class="filter-active-row" id="filter-active-row" hidden>
+        <span class="filter-active-label">Active</span>
+        <div class="scope-chips" id="filter-chips"></div>
+        <button type="button" class="footer-link filter-clear" id="clear-filters-btn">Clear filters</button>
       </div>
     </section>
 
@@ -960,6 +1405,8 @@ input, select, textarea, button { font-family: inherit; }
         <div class="summary-sub">
           <span id="summary-count">0 expenses</span>
           <span id="summary-avg">₪ 0 / day</span>
+          <span id="summary-not-final" class="summary-line-amber" hidden></span>
+          <span id="summary-selected" class="summary-selected" hidden></span>
         </div>
       </div>
       <div class="card">
@@ -981,16 +1428,16 @@ input, select, textarea, button { font-family: inherit; }
 
     <section class="section charts-grid">
       <div class="card wide">
-        <div class="card-title">Spend over time by category</div>
+        <div class="card-title">Spend over time by category<span class="filter-badge" data-filter-badge hidden title="Affected by filters"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 4h18l-7 8v6l-4 2v-8z"/></svg></span></div>
         <div class="chart-canvas-wrap tall"><canvas id="chart-by-category"></canvas></div>
         <div id="legend-by-category" class="legend-badges"></div>
       </div>
       <div class="card">
-        <div class="card-title">Total spend over time</div>
+        <div class="card-title">Total spend over time<span class="filter-badge" data-filter-badge hidden title="Affected by filters"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 4h18l-7 8v6l-4 2v-8z"/></svg></span></div>
         <div class="chart-canvas-wrap"><canvas id="chart-total"></canvas></div>
       </div>
       <div class="card">
-        <div class="card-title">Spend by category</div>
+        <div class="card-title">Spend by category<span class="filter-badge" data-filter-badge hidden title="Affected by filters"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 4h18l-7 8v6l-4 2v-8z"/></svg></span></div>
         <div class="donut-layout">
           <div class="chart-canvas-wrap donut">
             <canvas id="chart-donut"></canvas>
@@ -1001,21 +1448,47 @@ input, select, textarea, button { font-family: inherit; }
     </section>
 
     <section class="section card">
-      <div class="card-title">Expenses</div>
-      <div id="table-category-filter" class="legend-badges"></div>
-      <div class="table-wrap">
-        <table>
+      <div class="card-title-row">
+        <div class="card-title">Expenses<span class="filter-badge" data-filter-badge hidden title="Affected by filters"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 4h18l-7 8v6l-4 2v-8z"/></svg></span></div>
+        <div class="table-tools">
+          <span class="sort-select-label" id="sort-select-label">Sort</span>
+          <select id="table-sort-select" aria-labelledby="sort-select-label">
+            <option value="date:desc">Newest first</option>
+            <option value="date:asc">Oldest first</option>
+            <option value="amount:desc">Highest amount</option>
+            <option value="amount:asc">Lowest amount</option>
+            <option value="status:desc">Not final first</option>
+            <option value="status:asc">Final first</option>
+            <option value="category:asc">Category A–Z</option>
+            <option value="category:desc">Category Z–A</option>
+          </select>
+        </div>
+      </div>
+      <div class="search-wrap">
+        <svg class="search-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/></svg>
+        <input type="search" id="expense-search" dir="auto" placeholder="Search notes, category, amount…" aria-label="Search expenses">
+        <button type="button" class="search-clear" id="expense-search-clear" aria-label="Clear search" title="Clear search" hidden>&times;</button>
+      </div>
+      <div id="table-empty" class="table-empty" hidden>
+        <span id="table-empty-text">No expenses yet.</span><button type="button" class="footer-link" id="table-empty-clear" hidden>Clear filters</button>
+      </div>
+      <div class="table-wrap" id="table-wrap">
+        <table class="expense-table">
           <thead>
             <tr>
-              <th>Date</th>
-              <th class="amount-col">Amount</th>
-              <th>Category</th>
+              <th data-sort-col="date"><button type="button" class="th-sort" data-sort="date">Date<span class="sort-arrow"></span></button></th>
+              <th class="amount-col" data-sort-col="amount"><button type="button" class="th-sort" data-sort="amount">Amount<span class="sort-arrow"></span></button></th>
+              <th data-sort-col="status"><button type="button" class="th-sort" data-sort="status">Status<span class="sort-arrow"></span></button></th>
+              <th data-sort-col="category"><button type="button" class="th-sort" data-sort="category">Category<span class="sort-arrow"></span></button></th>
               <th>Notes</th>
+              <th class="row-actions-col" aria-label="Actions"></th>
             </tr>
           </thead>
           <tbody id="expense-table-body"></tbody>
         </table>
       </div>
+      <button type="button" class="btn show-all-btn" id="show-all-btn" hidden></button>
+      <div class="table-note">Tap “Not final” to mark an amount as final. Every edit and delete is also logged in the <strong>_ChangeLog</strong> tab of your spreadsheet.</div>
     </section>
 
   </div>
@@ -1028,7 +1501,7 @@ input, select, textarea, button { font-family: inherit; }
 </div>
 
 <!-- New trip modal -->
-<div id="new-trip-modal" class="modal-overlay" hidden>
+<div id="new-trip-modal" class="modal-overlay" data-no-overlay-close hidden>
   <div class="modal">
     <div class="modal-header">
       <h3>New trip</h3>
@@ -1052,15 +1525,18 @@ input, select, textarea, button { font-family: inherit; }
 </div>
 
 <!-- Add expense modal -->
-<div id="add-expense-modal" class="modal-overlay" hidden>
-  <div class="modal">
+<!-- Add / edit expense modal. One form for both: openAddExpenseModal() and
+     openEditExpenseModal() set the title, show/hide the split option (a
+     single existing record can't be split) and the Delete button. -->
+<div id="add-expense-modal" class="modal-overlay" data-no-overlay-close hidden>
+  <div class="modal" role="dialog" aria-modal="true" aria-labelledby="expense-modal-title">
     <div class="modal-header">
-      <h3>Add expense</h3>
-      <button class="btn btn-ghost" data-close-modal="add-expense-modal">&times;</button>
+      <h3 id="expense-modal-title">Add expense</h3>
+      <button class="btn btn-ghost" data-close-modal="add-expense-modal" aria-label="Close">&times;</button>
     </div>
 
     <div class="modal-field">
-      <label for="expense-date">Date</label>
+      <label for="expense-date" id="expense-date-label">Date</label>
       <input type="date" id="expense-date">
     </div>
 
@@ -1070,26 +1546,47 @@ input, select, textarea, button { font-family: inherit; }
     </div>
 
     <div class="modal-row modal-field">
-      <div>
+      <div class="currency-field">
         <label for="expense-currency">Currency</label>
         <select id="expense-currency"></select>
       </div>
       <div>
-        <label for="expense-amount">Amount</label>
-        <input type="number" id="expense-amount" min="0.01" step="0.01" placeholder="0.00" inputmode="decimal">
+        <label for="expense-amount" id="expense-amount-label">Amount</label>
+        <input type="number" id="expense-amount" step="0.01" placeholder="0.00" inputmode="decimal">
       </div>
     </div>
     <div id="conversion-line" class="conversion-line" hidden></div>
-    <button id="divide-toggle-btn" class="divide-toggle" type="button">Divide…</button>
-    <div id="divide-panel" class="divide-panel">
-      <input type="number" id="divide-total" placeholder="Total" min="0" step="0.01" inputmode="decimal">
-      <span>÷</span>
-      <input type="number" id="divide-by" placeholder="Divide by" min="1" step="1" inputmode="numeric">
-      <span>=</span>
-      <span id="divide-result" class="tabular-nums">—</span>
+
+    <div class="toggle-stack">
+      <label class="toggle-row" for="expense-not-final">
+        <input type="checkbox" id="expense-not-final" checked>
+        <span><strong>Amount not final yet</strong><small>Leave on until the real amount is confirmed.</small></span>
+      </label>
+
+      <div id="split-section">
+        <label class="toggle-row" for="split-enabled">
+          <input type="checkbox" id="split-enabled">
+          <span><strong>Split over several days</strong><small>E.g. a hotel for 5 nights — saved as one record per day.</small></span>
+        </label>
+        <div id="split-panel" class="split-panel" hidden>
+          <div class="seg" role="group" aria-label="Split by">
+            <button type="button" class="seg-btn active" data-split-mode="days" aria-pressed="true">Number of days</button>
+            <button type="button" class="seg-btn" data-split-mode="end" aria-pressed="false">End date</button>
+          </div>
+          <div class="modal-field" id="split-days-field">
+            <label for="split-days">Number of days</label>
+            <input type="number" id="split-days" min="2" max="366" step="1" inputmode="numeric" placeholder="e.g. 5">
+          </div>
+          <div class="modal-field" id="split-end-field" hidden>
+            <label for="split-end">End date (last day included)</label>
+            <input type="date" id="split-end">
+          </div>
+          <div id="split-preview" class="split-preview" aria-live="polite"></div>
+        </div>
+      </div>
     </div>
 
-    <div class="modal-field" style="margin-top:16px;">
+    <div class="modal-field">
       <label for="expense-notes">Notes</label>
       <input type="text" id="expense-notes" dir="auto" placeholder="Optional">
     </div>
@@ -1097,12 +1594,34 @@ input, select, textarea, button { font-family: inherit; }
     <div id="expense-error" class="field-error"></div>
 
     <div class="modal-actions">
+      <button id="delete-expense-btn" class="btn btn-danger-ghost" type="button" hidden>Delete</button>
+      <span class="modal-actions-spacer"></span>
       <span id="expense-saving-indicator" class="saving-indicator"><span class="spinner"></span> Saving…</span>
       <button class="btn" data-close-modal="add-expense-modal">Cancel</button>
       <button id="save-expense-btn" class="btn btn-secondary">Save</button>
     </div>
   </div>
 </div>
+
+<!-- Delete confirmation — an in-page dialog rather than window.confirm(),
+     which is ugly on phones and blocks the page. -->
+<div id="confirm-modal" class="modal-overlay" hidden>
+  <div class="modal modal-sm" role="alertdialog" aria-modal="true" aria-labelledby="confirm-title">
+    <div class="modal-header">
+      <h3 id="confirm-title">Delete this expense?</h3>
+    </div>
+    <p id="confirm-body" class="modal-hint" dir="auto"></p>
+    <p class="modal-hint">A copy is kept in the <strong>_ChangeLog</strong> tab of your spreadsheet.</p>
+    <div id="confirm-error" class="field-error"></div>
+    <div class="modal-actions">
+      <span id="confirm-saving-indicator" class="saving-indicator"><span class="spinner"></span> Deleting…</span>
+      <button class="btn" data-close-modal="confirm-modal">Cancel</button>
+      <button id="confirm-ok-btn" class="btn btn-danger">Delete</button>
+    </div>
+  </div>
+</div>
+
+<div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
 
 <!-- Pin categories modal -->
 <div id="pin-categories-modal" class="modal-overlay" hidden>
@@ -1387,14 +1906,36 @@ input, select, textarea, button { font-family: inherit; }
       USD: 3.65,
       JPY: 0.024,
     },
+    // Renamed 2026-11 for clarity (same meanings — see CATEGORY_ALIASES
+    // below for the old names). "Category MAI" and "Mai Save" were removed:
+    // they're no longer offered for new expenses, but old rows that use them
+    // still load, count in totals and show under their original names.
     categories: [
-      "Meals", "Lodging", "Transport", "Flights", "Essentials", "Leisure",
+      "Restaurants & Coffee", "Hotels", "Transport", "Flights", "Daily Needs", "Activities",
       "Clothing", "Cash Withdrawal", "Gifts for Others", "Gifts for Self",
-      "Fun", "Category MAI", "Mai Save", "Uncategorized",
+      "Fun", "Other",
     ],
-    monitored_categories: ["Fun", "Category MAI", "Leisure"],
+    monitored_categories: ["Fun", "Activities"],
     default_time_range: "All trip",
   };
+
+  // Old category name -> current name. Rows already in the sheet are never
+  // rewritten just because a category was renamed: they're read through
+  // this map, so they total, chart and filter under the new name. Even
+  // editing such a row keeps the old name in its cell unless a different
+  // category is actually picked (see onSaveExpense).
+  const CATEGORY_ALIASES = {
+    "Meals": "Restaurants & Coffee",
+    "Lodging": "Hotels",
+    "Essentials": "Daily Needs",
+    "Leisure": "Activities",
+    "Uncategorized": "Other",
+  };
+
+  function canonicalCategory(name) {
+    const trimmed = String(name === undefined || name === null ? "" : name).trim();
+    return CATEGORY_ALIASES[trimmed] || trimmed;
+  }
 
   // ============================================================
   // GOOGLE SHEETS + SIGN-IN — replaces the /api/* calls the old backend
@@ -1426,8 +1967,31 @@ input, select, textarea, button { font-family: inherit; }
   const METADATA_SHEET_NAME = "_Metadata";
   const METADATA_HEADERS = ["Trip Name", "Notes", "Currency"];
 
+  // Optional 5th trip column: TRUE while an amount is a placeholder (the
+  // "not final" flag), FALSE/blank once it's the real figure. Not part of
+  // REQUIRED_HEADERS, so tabs created before this column existed are still
+  // valid trips — a blank cell there reads as "final", since those rows
+  // were entered before the flag existed. The column is only added to an
+  // existing tab the first time a TRUE actually has to be written
+  // (ensureNotFinalColumn), in the first column no row has any data in.
+  const NOT_FINAL_HEADER = "Not Final";
+  const NEW_TRIP_HEADERS = [...REQUIRED_HEADERS, NOT_FINAL_HEADER];
+
+  // Append-only safety net for the two destructive operations this app
+  // has (editing and deleting a row): the row's old values are logged here
+  // before it's changed, so any mistake is recoverable from inside the
+  // spreadsheet itself, on top of Google Sheets' own version history.
+  const CHANGELOG_SHEET_NAME = "_ChangeLog";
+  const CHANGELOG_HEADERS = [
+    "Logged At", "Trip", "Action",
+    "Old Date", "Old Amount", "Old Category", "Old Notes", "Old Not Final",
+    "New Date", "New Amount", "New Category", "New Notes", "New Not Final",
+  ];
+
+  const RESERVED_SHEET_NAMES = [METADATA_SHEET_NAME, CHANGELOG_SHEET_NAME].map((n) => n.toLowerCase());
+
   function isReservedTripName(name) {
-    return (name || "").trim().toLowerCase() === METADATA_SHEET_NAME.toLowerCase();
+    return RESERVED_SHEET_NAMES.includes((name || "").trim().toLowerCase());
   }
 
   const SPREADSHEET_ID_KEY = "travel_expenses_spreadsheet_id";
@@ -1490,6 +2054,15 @@ input, select, textarea, button { font-family: inherit; }
     return refreshInFlight;
   }
 
+  // An error no retry can fix (a renamed column, a duplicate trip name, a
+  // row changed elsewhere): withRetry gives up at once instead of making
+  // the user wait out the back-off for a guaranteed failure.
+  function permanentError(message) {
+    const err = new Error(message);
+    err.noRetry = true;
+    return err;
+  }
+
   function authFailureError(message) {
     const err = new Error(message);
     err.authFailure = true;
@@ -1527,7 +2100,7 @@ input, select, textarea, button { font-family: inherit; }
     }
     if (res.status === 401) {
       showConnectionBanner("Google connection expired.", "Reconnect to Google", onReconnectClick);
-      throw authFailureError("Google session expired. Please reconnect.");
+      throw authFailureError("Google session expired — nothing was saved. Tap “Reconnect to Google” at the top of the screen, then try again.");
     }
 
     let body = null;
@@ -1618,7 +2191,7 @@ input, select, textarea, button { font-family: inherit; }
     const map = headerIndexMap((data.values || [])[0] || []);
     const missing = missingHeaders(map);
     if (missing.length) {
-      throw new Error(`'${trip}' is missing required column(s): ${missing.join(", ")}`);
+      throw permanentError(`'${trip}' is missing required column(s): ${missing.join(", ")}`);
     }
     tripHeaderMapCache[trip] = map;
     return map;
@@ -1647,6 +2220,7 @@ input, select, textarea, button { font-family: inherit; }
 
     const trips = [];
     titles.forEach((title, i) => {
+      if (isReservedTripName(title)) return; // _Metadata / _ChangeLog are never trips
       const row = (valueRanges[i] && valueRanges[i].values && valueRanges[i].values[0]) || [];
       const map = headerIndexMap(row);
       if (missingHeaders(map).length === 0) {
@@ -1660,12 +2234,12 @@ input, select, textarea, button { font-family: inherit; }
 
   async function createTripApi(name, currency) {
     if (isReservedTripName(name)) {
-      throw new Error(`'${name}' is a reserved name — choose a different trip name.`);
+      throw permanentError(`'${name}' is a reserved name — choose a different trip name.`);
     }
     const meta = await sheetsGet("?fields=" + encodeURIComponent("sheets.properties.title"));
     const titles = (meta.sheets || []).map((s) => s.properties.title);
     if (titles.includes(name)) {
-      throw new Error(`Trip '${name}' already exists`);
+      throw permanentError(`Trip '${name}' already exists`);
     }
 
     // addSheet is atomic — two near-simultaneous creates of the same name
@@ -1677,14 +2251,14 @@ input, select, textarea, button { font-family: inherit; }
       body: JSON.stringify({ requests: [{ addSheet: { properties: { title: name } } }] }),
     });
 
-    const range = encodeURIComponent(a1Range(name, "A1:D1"));
+    const range = encodeURIComponent(a1Range(name, "A1:E1"));
     await sheetsFetch(sheetsSpreadsheetUrl(`/values/${range}?valueInputOption=RAW`), {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ values: [REQUIRED_HEADERS] }),
+      body: JSON.stringify({ values: [NEW_TRIP_HEADERS] }),
     });
 
-    tripHeaderMapCache[name] = { Date: 0, Amount: 1, Category: 2, Notes: 3 };
+    tripHeaderMapCache[name] = headerIndexMap(NEW_TRIP_HEADERS);
 
     // Trip names are already guaranteed unique above, so this is always a
     // fresh append inside upsertMetadataRow, never the same-row update path.
@@ -1859,54 +2433,317 @@ input, select, textarea, button { font-family: inherit; }
     return String(value);
   }
 
-  async function getExpenses(trip) {
-    const map = await getTripHeaderMap(trip);
-    // Whole-sheet read (no A1 cell range) so a header living outside A:D
-    // on a hand-edited sheet is still found — mirrors excel_io.py reading
-    // the full worksheet rather than assuming a fixed column block.
-    // UNFORMATTED_VALUE keeps Amount a plain number (not a locale-
-    // formatted "1,234.56" string with a comma parseFloat would choke on).
+  function isBlankCell(v) { return v === undefined || v === null || v === ""; }
+
+  // Reads the "Not Final" cell loosely, since the column may also be typed
+  // into by hand in Google Sheets (TRUE, yes, 1, a checkbox...).
+  function parseNotFinal(value) {
+    if (value === true) return true;
+    if (isBlankCell(value) || value === false) return false;
+    return /^(true|yes|y|1|x|v|✓)$/i.test(String(value).trim());
+  }
+
+  function colLetter(index) {
+    let n = index + 1, s = "";
+    while (n > 0) {
+      const r = (n - 1) % 26;
+      s = String.fromCharCode(65 + r) + s;
+      n = Math.floor((n - 1) / 26);
+    }
+    return s;
+  }
+
+  // The app-owned cells of one sheet row, normalized exactly the way
+  // getExpenses reads them. Used both to identify a row (rowSignature) and
+  // to record its old values in the change log.
+  function ownedValues(row, map) {
+    const amountVal = row[map.Amount];
+    return {
+      date: cellToIsoDate(row[map.Date]),
+      amount: isBlankCell(amountVal) ? "" : Number(amountVal),
+      rawCategory: isBlankCell(row[map.Category]) ? "" : String(row[map.Category]),
+      notes: isBlankCell(row[map.Notes]) ? "" : String(row[map.Notes]),
+      notFinal: map[NOT_FINAL_HEADER] !== undefined ? parseNotFinal(row[map[NOT_FINAL_HEADER]]) : false,
+    };
+  }
+
+  // What a row "is", for finding it again before an edit/delete: its owned
+  // cells only. A user's own extra columns are deliberately not part of it.
+  function rowSignature(row, map) {
+    const v = ownedValues(row, map);
+    return JSON.stringify([v.date, v.amount, v.rawCategory, v.notes, v.notFinal]);
+  }
+
+  // Fresh, uncached read of a whole trip tab (header + every row) — the
+  // "read" half of every read-modify-write below. Whole-sheet (no A1 cell
+  // range) so a header living outside A:D on a hand-edited sheet is still
+  // found — mirrors excel_io.py reading the full worksheet. UNFORMATTED_VALUE
+  // keeps Amount a plain number (not a locale-formatted "1,234.56" string
+  // parseFloat would choke on). Throws — never returns "no rows" — if the
+  // tab has lost its required columns: a missing header must stop a write,
+  // not look like an empty trip.
+  async function readTripSheetFresh(trip) {
     const range = encodeURIComponent(a1Range(trip));
     const data = await sheetsGet(`/values/${range}?valueRenderOption=UNFORMATTED_VALUE&dateTimeRenderOption=SERIAL_NUMBER`);
     const rows = data.values || [];
+    const map = headerIndexMap(rows[0] || []);
+    const missing = missingHeaders(map);
+    if (missing.length) {
+      throw permanentError(`'${trip}' is missing required column(s): ${missing.join(", ")}`);
+    }
+    tripHeaderMapCache[trip] = map;
+    return { rows, map };
+  }
+
+  async function getExpenses(trip) {
+    const { rows, map } = await readTripSheetFresh(trip);
     const expenses = [];
     for (let i = 1; i < rows.length; i++) {
       const row = rows[i];
-      const dateVal = row[map.Date];
-      const amountVal = row[map.Amount];
-      const dateEmpty = dateVal === undefined || dateVal === null || dateVal === "";
-      const amountEmpty = amountVal === undefined || amountVal === null || amountVal === "";
-      if (dateEmpty && amountEmpty) continue; // skip fully blank trailing rows
+      if (isBlankCell(row[map.Date]) && isBlankCell(row[map.Amount])) continue; // skip fully blank rows
+      const v = ownedValues(row, map);
       expenses.push({
-        date: cellToIsoDate(dateVal),
-        amount: amountEmpty ? 0 : (Number(amountVal) || 0),
-        category: row[map.Category] !== undefined ? String(row[map.Category]) : "",
-        notes: row[map.Notes] !== undefined ? String(row[map.Notes]) : "",
+        date: v.date,
+        amount: v.amount === "" ? 0 : (v.amount || 0),
+        category: canonicalCategory(v.rawCategory), // old names shown under their new name
+        rawCategory: v.rawCategory,                  // what's actually in the cell
+        notes: v.notes,
+        notFinal: v.notFinal,
+        sheetRow: i + 1,                             // 1-based; a hint only — re-verified before any write
+        sig: rowSignature(row, map),
       });
     }
     return { expenses };
   }
 
-  // Appends one row via Sheets' native append endpoint — additive, never
-  // a full-range overwrite, so two tabs/devices writing at once can't
-  // clobber each other. This is the Sheets-native equivalent of
-  // excel_io.py's lock-protected load-modify-save, without needing a lock.
-  async function postExpense(trip, expense) {
-    const map = await getTripHeaderMap(trip);
-    const width = Math.max(map.Date, map.Amount, map.Category, map.Notes) + 1;
-    const row = new Array(width).fill("");
-    row[map.Date] = expense.date;
-    row[map.Amount] = expense.amount_base;
-    row[map.Category] = expense.category;
-    row[map.Notes] = expense.notes || "";
+  // Adds the "Not Final" header to an existing trip tab that predates it,
+  // in the first column that has no data in ANY row (not just the first
+  // blank header cell — a hand-added column with no header must never be
+  // taken over). Idempotent: if another tab/device added it meanwhile, the
+  // fresh read finds it and nothing is written.
+  async function ensureNotFinalColumn(trip, map) {
+    if (map[NOT_FINAL_HEADER] !== undefined) return map;
+    const fresh = await readTripSheetFresh(trip);
+    if (fresh.map[NOT_FINAL_HEADER] !== undefined) return fresh.map;
+    const col = fresh.rows.reduce((w, r) => Math.max(w, r.length), 0);
+    const range = encodeURIComponent(a1Range(trip, `${colLetter(col)}1`));
+    const writeHeader = () => sheetsFetch(sheetsSpreadsheetUrl(`/values/${range}?valueInputOption=RAW`), {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ values: [[NOT_FINAL_HEADER]] }),
+    });
+    try {
+      await writeHeader();
+    } catch (err) {
+      // A tab whose grid ends exactly at its last used column (e.g. one
+      // trimmed by hand) has no room for a new one — add a single column
+      // at the end of the grid, then write the header again.
+      if (!/exceeds grid limits/i.test(err.message || "")) throw err;
+      const sheetId = await getSheetId(trip);
+      await sheetsFetch(sheetsSpreadsheetUrl(":batchUpdate"), {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ requests: [{ appendDimension: { sheetId, dimension: "COLUMNS", length: 1 } }] }),
+      });
+      await writeHeader();
+    }
+    const next = { ...fresh.map, [NOT_FINAL_HEADER]: col };
+    tripHeaderMapCache[trip] = next;
+    return next;
+  }
 
-    const range = encodeURIComponent(a1Range(trip, "A1"));
-    await sheetsFetch(sheetsSpreadsheetUrl(`/values/${range}:append?valueInputOption=RAW&insertDataOption=INSERT_ROWS`), {
+  // Every write to a trip's rows (append, edit, delete, mark-final) goes
+  // through this one chain, so two quick actions in this tab can never
+  // interleave their read-then-write cycles.
+  let rowWriteChain = Promise.resolve();
+  function serializeRowWrite(fn) {
+    const run = () => fn();
+    const result = rowWriteChain.then(run, run);
+    rowWriteChain = result.catch(() => {});
+    return result;
+  }
+
+  // Appends one or more rows (a split payment is several) in a single
+  // request via Sheets' native append endpoint — additive, never a
+  // full-range overwrite, so two tabs/devices writing at once can't clobber
+  // each other.
+  function postExpenses(trip, expenses) {
+    return serializeRowWrite(async () => {
+      let map = await getTripHeaderMap(trip, true);
+      if (expenses.some((e) => e.notFinal)) map = await ensureNotFinalColumn(trip, map);
+      const nfCol = map[NOT_FINAL_HEADER];
+      const owned = [map.Date, map.Amount, map.Category, map.Notes];
+      if (nfCol !== undefined) owned.push(nfCol);
+      const width = Math.max(...owned) + 1;
+      const values = expenses.map((expense) => {
+        const row = new Array(width).fill("");
+        row[map.Date] = expense.date;
+        row[map.Amount] = expense.amount;
+        row[map.Category] = expense.category;
+        row[map.Notes] = expense.notes || "";
+        if (nfCol !== undefined) row[nfCol] = !!expense.notFinal;
+        return row;
+      });
+
+      const range = encodeURIComponent(a1Range(trip, "A1"));
+      await sheetsFetch(sheetsSpreadsheetUrl(`/values/${range}:append?valueInputOption=RAW&insertDataOption=INSERT_ROWS`), {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ values }),
+      });
+      return { ok: true };
+    });
+  }
+
+  function staleRowError() {
+    const err = new Error("This expense was changed or deleted somewhere else (another tab or device), so nothing was saved. The list has been refreshed — check it and try again.");
+    err.staleRow = true;
+    err.noRetry = true;
+    return err;
+  }
+
+  // Finds the sheet row an on-screen expense came from, against a FRESH
+  // read taken immediately before the write — never a row number
+  // remembered from when the list was loaded, which another tab/device may
+  // have shifted since. The remembered row is tried first (it also settles
+  // which of two identical rows is meant); otherwise the first row with
+  // the same content is used. No match = stop with an error: "not found"
+  // never becomes "write somewhere anyway".
+  // Accepted, disclosed limit: Sheets has no compare-and-swap, so a row
+  // shift landing in the ~1 round-trip between this read and the write
+  // can't be ruled out. Every edit/delete is logged to _ChangeLog first for
+  // exactly that reason.
+  async function locateExpenseRow(trip, expense) {
+    const { rows, map } = await readTripSheetFresh(trip);
+    const matches = (i) => i >= 1 && i < rows.length && rowSignature(rows[i], map) === expense.sig;
+    let index = expense.sheetRow - 1;
+    if (!matches(index)) {
+      index = -1;
+      for (let i = 1; i < rows.length; i++) {
+        if (matches(i)) { index = i; break; }
+      }
+    }
+    if (index === -1) throw staleRowError();
+    return { index, row: rows[index], map };
+  }
+
+  // Writes individual cells of one row in a single atomic request — only
+  // the app's own columns are ever addressed, so anything the user keeps in
+  // their own columns on that row is untouched.
+  async function writeRowCells(trip, sheetRow, cells) {
+    if (!cells.length) return;
+    await sheetsFetch(sheetsSpreadsheetUrl("/values:batchUpdate"), {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ values: [row] }),
+      body: JSON.stringify({
+        valueInputOption: "RAW",
+        data: cells.map((c) => ({ range: a1Range(trip, `${colLetter(c.col)}${sheetRow}`), values: [[c.value]] })),
+      }),
     });
-    return { ok: true };
+  }
+
+  async function getSheetId(title) {
+    const meta = await sheetsGet("?fields=" + encodeURIComponent("sheets.properties(sheetId,title)"));
+    const sheet = (meta.sheets || []).find((s) => s.properties.title === title);
+    if (!sheet) throw new Error(`The tab '${title}' was not found in your spreadsheet.`);
+    return sheet.properties.sheetId;
+  }
+
+  // Best-effort by design: a log entry that can't be written must never
+  // block the edit/delete itself (same rule as finance-tracker's rolling
+  // backup). Logged after the row is located and before it's changed, so
+  // the old values are on record even if the write then fails midway.
+  async function appendChangeLog(trip, action, oldValues, newValues) {
+    try {
+      const meta = await sheetsGet("?fields=" + encodeURIComponent("sheets.properties.title"));
+      const titles = (meta.sheets || []).map((s) => s.properties.title);
+      if (!titles.includes(CHANGELOG_SHEET_NAME)) {
+        await sheetsFetch(sheetsSpreadsheetUrl(":batchUpdate"), {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ requests: [{ addSheet: { properties: { title: CHANGELOG_SHEET_NAME } } }] }),
+        });
+        // The range must span every header cell — the Sheets API rejects a
+        // write that runs past the range it names (e.g. 13 values into "A1").
+        const headerRange = encodeURIComponent(a1Range(CHANGELOG_SHEET_NAME, `A1:${colLetter(CHANGELOG_HEADERS.length - 1)}1`));
+        await sheetsFetch(sheetsSpreadsheetUrl(`/values/${headerRange}?valueInputOption=RAW`), {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ values: [CHANGELOG_HEADERS] }),
+        });
+      }
+      const n = newValues || {};
+      const row = [
+        new Date().toISOString(), trip, action,
+        oldValues.date, oldValues.amount, oldValues.rawCategory, oldValues.notes, oldValues.notFinal,
+        newValues ? n.date : "", newValues ? n.amount : "", newValues ? n.category : "",
+        newValues ? n.notes : "", newValues ? n.notFinal : "",
+      ];
+      const range = encodeURIComponent(a1Range(CHANGELOG_SHEET_NAME, "A1"));
+      await sheetsFetch(sheetsSpreadsheetUrl(`/values/${range}:append?valueInputOption=RAW&insertDataOption=INSERT_ROWS`), {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ values: [row] }),
+      });
+    } catch (err) {
+      if (err.authFailure) throw err; // the edit itself would fail the same way — surface it once, from here
+      console.warn("Change log entry could not be written (the change itself still goes ahead):", err);
+    }
+  }
+
+  // Edits one existing row. `fields` may be partial ({ notFinal: false }
+  // from the one-tap "mark final"); anything omitted keeps the row's fresh
+  // on-sheet value. Only cells whose value actually changes are written (an
+  // untouched hand-entered date keeps its real date type, an unchanged flag
+  // never forces the "Not Final" column into being).
+  function updateExpense(trip, expense, fields) {
+    return serializeRowWrite(async () => {
+      const loc = await locateExpenseRow(trip, expense);
+      let map = loc.map;
+      const old = ownedValues(loc.row, map);
+      const next = {
+        date: old.date, amount: old.amount, category: old.rawCategory, notes: old.notes, notFinal: old.notFinal,
+        ...fields,
+      };
+      const cells = [];
+      if (old.date !== next.date) cells.push({ key: "Date", value: next.date });
+      if (old.amount !== next.amount) cells.push({ key: "Amount", value: next.amount });
+      if (old.rawCategory !== next.category) cells.push({ key: "Category", value: next.category });
+      if (old.notes !== next.notes) cells.push({ key: "Notes", value: next.notes });
+      if (old.notFinal !== next.notFinal) {
+        if (next.notFinal) map = await ensureNotFinalColumn(trip, map);
+        cells.push({ key: NOT_FINAL_HEADER, value: next.notFinal });
+      }
+      if (!cells.length) return { changed: false };
+      await appendChangeLog(trip, "edit", old, next);
+      await writeRowCells(trip, loc.index + 1, cells.map((c) => ({ col: map[c.key], value: c.value })));
+      return { changed: true };
+    });
+  }
+
+  // Deletes one row. If the user keeps their own data in other columns of
+  // that row, only the app's cells are blanked (the row stays, the user's
+  // column survives — Golden Rule); otherwise the whole row is removed.
+  function deleteExpense(trip, expense) {
+    return serializeRowWrite(async () => {
+      const loc = await locateExpenseRow(trip, expense);
+      const map = loc.map;
+      const ownedCols = [map.Date, map.Amount, map.Category, map.Notes, map[NOT_FINAL_HEADER]].filter((c) => c !== undefined);
+      const hasForeignData = loc.row.some((v, c) => !ownedCols.includes(c) && !isBlankCell(v));
+      await appendChangeLog(trip, "delete", ownedValues(loc.row, map), null);
+      if (hasForeignData) {
+        await writeRowCells(trip, loc.index + 1, ownedCols.map((col) => ({ col, value: "" })));
+      } else {
+        const sheetId = await getSheetId(trip);
+        await sheetsFetch(sheetsSpreadsheetUrl(":batchUpdate"), {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            requests: [{ deleteDimension: { range: { sheetId, dimension: "ROWS", startIndex: loc.index, endIndex: loc.index + 1 } } }],
+          }),
+        });
+      }
+    });
   }
 
   // A few backed-off retries for transient failures (network blip, Sheets
@@ -1919,7 +2756,7 @@ input, select, textarea, button { font-family: inherit; }
         return await fn();
       } catch (err) {
         lastErr = err;
-        if (err.authFailure) throw err;
+        if (err.authFailure || err.noRetry) throw err;
         if (i < delaysMs.length) await new Promise((r) => setTimeout(r, delaysMs[i]));
       }
     }
@@ -2063,8 +2900,26 @@ input, select, textarea, button { font-family: inherit; }
   let allExpenses = [];       // every expense for the active trip (unfiltered)
   let currentRangeKey = "all";
   let charts = { byCategory: null, total: null, donut: null };
-  let categoryVisibility = {}; // category -> bool (shown in the by-category chart)
   let pinnedCategories = [];   // user-chosen categories shown as dashboard gauges
+
+  /* ---- Filter state — mirrors finance-tracker's §FILTER-BAR model ----
+     The single source of truth for every filter on the dashboard. Replaces
+     the old click-to-hide / double-click-to-solo category pills, which kept
+     hidden state you couldn't see in one place or reset in one action.
+     Date range is NOT in here: it's the context every panel reads, not a
+     filter layered on top, which is also why "Clear filters" leaves it.
+     Nothing here is persisted or written to the spreadsheet — UI only. */
+  const filterState = {
+    status: "all",   // "all" | "notFinal" | "final"
+    categories: [],  // canonical category names; empty = every category
+  };
+  let searchQuery = "";                         // free text, table only
+  let sortState = { key: "date", dir: "desc" };  // table sort
+  let showAllRows = false;
+  const TABLE_ROW_LIMIT = 50;
+  let editingExpense = null;  // set while the expense modal is editing an existing row
+  let splitMode = "days";     // "days" | "end"
+  let newlyChangedKeys = new Set(); // rows to flash after a save
 
   const el = (id) => document.getElementById(id);
 
@@ -2085,7 +2940,10 @@ input, select, textarea, button { font-family: inherit; }
 
   function currencySymbol(code) {
     if (code === activeTripCurrency) return activeTripCurrencySymbol;
-    return CURRENCY_SYMBOLS[code] || code + " ";
+    // symbolForCurrency knows the base currency's symbol (₪), which
+    // CURRENCY_SYMBOLS doesn't list — paying in shekels on a yen/euro trip
+    // used to show "ILS 100.00" instead of "₪100.00".
+    return symbolForCurrency(code);
   }
 
   function isKnownCurrency(code) {
@@ -2114,6 +2972,36 @@ input, select, textarea, button { font-family: inherit; }
   }
 
   function todayISO() { return toISODate(new Date()); }
+
+  function isISODate(s) { return /^\d{4}-\d{2}-\d{2}$/.test(s || ""); }
+
+  function addDaysISO(iso, n) {
+    const [y, m, d] = iso.split("-").map(Number);
+    return toISODate(new Date(y, m - 1, d + n));
+  }
+
+  function daysInclusive(fromISO, toISO) {
+    const [fy, fm, fd] = fromISO.split("-").map(Number);
+    const [ty, tm, td] = toISO.split("-").map(Number);
+    return Math.round((Date.UTC(ty, tm - 1, td) - Date.UTC(fy, fm - 1, fd)) / 86400000) + 1;
+  }
+
+  // "Thu 21 May 2026" — the table and dialogs show this instead of the raw
+  // ISO string (which wrapped mid-date on a phone). A non-date value from a
+  // hand-edited sheet is shown as-is.
+  function friendlyDate(iso) {
+    if (!isISODate(iso)) return iso || "—";
+    const [y, m, d] = iso.split("-").map(Number);
+    return new Date(y, m - 1, d).toLocaleDateString("en-GB", { weekday: "short", day: "numeric", month: "short", year: "numeric" }).replace(/,/g, "");
+  }
+
+  function shortDate(iso) {
+    if (!isISODate(iso)) return iso || "—";
+    const [y, m, d] = iso.split("-").map(Number);
+    return new Date(y, m - 1, d).toLocaleDateString("en-GB", { day: "numeric", month: "short" });
+  }
+
+  function round2(n) { return Math.round(n * 100) / 100; }
 
   // ---- Init ----
 
@@ -2198,7 +3086,11 @@ input, select, textarea, button { font-family: inherit; }
     if (raw === null) return [...appConfig.monitored_categories]; // first run: use config's default
     try {
       const stored = JSON.parse(raw);
-      if (Array.isArray(stored)) return stored.filter((c) => appConfig.categories.includes(c));
+      // Pins saved under an old category name follow the rename; pins of a
+      // removed category are dropped.
+      if (Array.isArray(stored)) {
+        return Array.from(new Set(stored.map(canonicalCategory))).filter((c) => appConfig.categories.includes(c));
+      }
     } catch (e) { /* fall through */ }
     return [...appConfig.monitored_categories];
   }
@@ -2284,10 +3176,13 @@ input, select, textarea, button { font-family: inherit; }
     el("trip-note-input").value = meta.notes || "";
     el("note-error").classList.remove("visible");
 
-    categoryVisibility = {};
-    const allCats = new Set(appConfig.categories);
-    allExpenses.forEach((e) => allCats.add(e.category));
-    for (const cat of allCats) categoryVisibility[cat] = true;
+    // A filter carried over from another trip would silently hide rows here.
+    filterState.status = "all";
+    filterState.categories = [];
+    searchQuery = "";
+    el("expense-search").value = "";
+    el("expense-search-clear").hidden = true;
+    showAllRows = false;
     el("dashboard").hidden = false;
     renderAll();
   }
@@ -2408,6 +3303,9 @@ input, select, textarea, button { font-family: inherit; }
     const today = new Date();
     today.setHours(0, 0, 0, 0);
 
+    if (currentRangeKey === "today") {
+      return { from: toISODate(today), to: toISODate(today) };
+    }
     if (currentRangeKey === "week") {
       const from = startOfISOWeek(today);
       const to = new Date(from);
@@ -2442,8 +3340,8 @@ input, select, textarea, button { font-family: inherit; }
       const days = Math.round((new Date(to) - new Date(from)) / 86400000) + 1;
       return Math.max(days, 1);
     }
-    if (expenses.length === 0) return 1;
-    const dates = expenses.map((e) => e.date).sort();
+    const dates = expenses.map((e) => e.date).filter(isISODate).sort();
+    if (dates.length === 0) return 1;
     const span = Math.round((new Date(dates[dates.length - 1]) - new Date(dates[0])) / 86400000) + 1;
     return Math.max(span, 1);
   }
@@ -2542,8 +3440,12 @@ input, select, textarea, button { font-family: inherit; }
   // whatever the trip's own length would auto-pick. Auto-selection is still
   // here as the fallback for a hypothetical future chart that wants it.
   function computeBuckets(expenses, forcedGranularity) {
-    if (expenses.length === 0) return { labels: [], buckets: [], indexByKey: new Map(), granularity: "daily", from: null };
-    const isoDates = expenses.map((e) => e.date);
+    // Only real ISO dates can be placed on a time axis. A blank or
+    // hand-typed non-date cell used to become the axis start ("" sorts
+    // first) and blank out both time charts entirely; such rows are now
+    // just left off the charts (they still count in totals and the table).
+    const isoDates = expenses.map((e) => e.date).filter(isISODate);
+    if (isoDates.length === 0) return { labels: [], buckets: [], indexByKey: new Map(), granularity: "daily", from: null };
     const from = isoDates.reduce((a, b) => (a < b ? a : b));
     const to = isoDates.reduce((a, b) => (a > b ? a : b));
     const granularity = forcedGranularity || determineGranularity(from, to);
@@ -2559,10 +3461,11 @@ input, select, textarea, button { font-family: inherit; }
   // weekly/monthly the way the total chart does.
   function bucketedTotalsByCategory(expenses) {
     const { labels, buckets, indexByKey, granularity, from } = computeBuckets(expenses, "daily");
-    const categories = Array.from(new Set(expenses.map((e) => e.category)));
+    const dated = expenses.filter((e) => isISODate(e.date)); // see computeBuckets
+    const categories = Array.from(new Set(dated.map((e) => e.category)));
     const series = {};
     for (const cat of categories) series[cat] = buckets.map(() => 0);
-    expenses.forEach((e) => {
+    dated.forEach((e) => {
       const idx = indexByKey.get(bucketKeyForDate(e.date, granularity, from));
       if (idx !== undefined) series[e.category][idx] += e.amount;
     });
@@ -2575,7 +3478,7 @@ input, select, textarea, button { font-family: inherit; }
   function bucketedTotals(expenses) {
     const { labels, buckets, indexByKey, granularity, from } = computeBuckets(expenses, "weekly");
     const totals = buckets.map(() => 0);
-    expenses.forEach((e) => {
+    expenses.filter((e) => isISODate(e.date)).forEach((e) => {
       const idx = indexByKey.get(bucketKeyForDate(e.date, granularity, from));
       if (idx !== undefined) totals[idx] += e.amount;
     });
@@ -2584,81 +3487,227 @@ input, select, textarea, button { font-family: inherit; }
 
   // ---- Rendering ----
 
+  /* Two views of the data, and the rule for which panels get which — the
+     same scope rule as finance-tracker's §FILTER-BAR:
+       dateRows    — date range only. Feeds the anchors: Total spent and the
+                     pinned-category gauges, so a filter can't move them
+                     under you (Total spent gains a "Selected" line instead).
+       exploreRows — date range PLUS the status/category filters. Feeds the
+                     charts, the donut and the table.
+     One predicate (matchesExplore) used everywhere, so no panel can ever
+     disagree with a chip. */
   function renderAll() {
-    const dateFiltered = filteredExpenses();
-    const visible = dateFiltered.filter((e) => categoryVisibility[e.category] !== false);
-    renderCategoryFilterPills(el("legend-by-category"));
-    renderCategoryFilterPills(el("table-category-filter"));
-    renderSummary(visible);
-    renderGauges(visible);
-    renderCharts(dateFiltered, visible);
-    renderTable(visible);
+    const dateRows = filteredExpenses();
+    const exploreRows = dateRows.filter(matchesExplore);
+    renderFilterUI();
+    renderSummary(dateRows, exploreRows);
+    renderGauges(dateRows);
+    renderCharts(dateRows, exploreRows);
+    renderTable(exploreRows, dateRows.length > 0);
   }
 
-  // Every category the trip has ever used (config order first, then any
-  // stray values found in the sheet) — stable regardless of the current time
-  // range, so a category never disappears from the filter just because it
-  // has no rows in the selected window.
+  function hasExploreFilters() {
+    return filterState.status !== "all" || filterState.categories.length > 0;
+  }
+
+  function matchesExplore(e) {
+    if (filterState.status === "notFinal" && !e.notFinal) return false;
+    if (filterState.status === "final" && e.notFinal) return false;
+    if (filterState.categories.length > 0 && !filterState.categories.includes(e.category)) return false;
+    return true;
+  }
+
+  // Every category to offer as a filter: the configured list first, then
+  // any other value found in this trip's rows (a removed category such as
+  // "Category MAI" on old rows, or one typed into the sheet by hand) — so
+  // no row is ever unreachable from the filter.
   function categoryFilterList() {
-    const extras = Object.keys(categoryVisibility)
+    const extras = Array.from(new Set(allExpenses.map((e) => e.category)))
       .filter((c) => !appConfig.categories.includes(c))
       .sort();
     return [...appConfig.categories, ...extras];
   }
 
-  // Shared by both the chart legend and the expense-table filter row — they
-  // toggle the same categoryVisibility state, so acting on either stays in
-  // sync with the other and re-renders the whole dashboard (table, totals,
-  // donut, gauges), not just the one chart.
-  function renderCategoryFilterPills(container) {
-    container.innerHTML = "";
-    categoryFilterList().forEach((cat) => {
-      const badge = document.createElement("button");
-      badge.type = "button";
-      badge.className = "legend-badge" + (categoryVisibility[cat] !== false ? "" : " disabled");
-      badge.title = "Click to toggle · double-click to show only this category";
-      badge.innerHTML = `<span class="swatch" style="background:${categoryColor(cat)}"></span>${escapeHtml(cat)}`;
-      attachCategoryToggle(badge, cat);
-      container.appendChild(badge);
-    });
-  }
+  // ---- setters: each mutates the state and triggers exactly one render ----
 
-  // Shows only `cat` (hides every other category); double-clicking the
-  // already-isolated category again restores all of them, so solo mode is
-  // never a dead end — you don't have to re-enable every category by hand.
-  function soloCategory(cat) {
-    const isolated = categoryFilterList().every((c) => (categoryVisibility[c] !== false) === (c === cat));
-    categoryFilterList().forEach((c) => { categoryVisibility[c] = isolated ? true : c === cat; });
+  function setFilterStatus(status) {
+    if (filterState.status === status) return;
+    filterState.status = status;
+    showAllRows = false;
     renderAll();
   }
 
-  // A single click toggles just this category. A double-click should solo
-  // it instead — but the browser fires two "click" events before "dblclick",
-  // so a plain click listener would flip this category on/off/on again first.
-  // Defer the single-click action briefly; a second click within the window
-  // cancels it and lets the dblclick handler take over.
-  function attachCategoryToggle(element, cat) {
-    let pending = null;
-    element.addEventListener("click", () => {
-      if (pending) { clearTimeout(pending); pending = null; return; }
-      pending = setTimeout(() => {
-        pending = null;
-        categoryVisibility[cat] = categoryVisibility[cat] === false ? true : false;
-        renderAll();
-      }, 250);
-    });
-    element.addEventListener("dblclick", () => {
-      if (pending) { clearTimeout(pending); pending = null; }
-      soloCategory(cat);
-    });
+  function toggleCategoryFilter(cat) {
+    const i = filterState.categories.indexOf(cat);
+    if (i === -1) filterState.categories.push(cat);
+    else filterState.categories.splice(i, 1);
+    showAllRows = false;
+    renderAll();
   }
 
-  function renderSummary(expenses) {
-    const total = expenses.reduce((sum, e) => sum + e.amount, 0);
-    const days = rangeDayCount(expenses);
+  function onlyCategoryFilter(cat) {
+    filterState.categories = [cat];
+    showAllRows = false;
+    renderAll();
+  }
+
+  function clearExploreFilters() {
+    filterState.status = "all";
+    filterState.categories = [];
+    showAllRows = false;
+    renderAll();
+  }
+
+  const STATUS_LABELS = { notFinal: "Not final", final: "Final" };
+  const TICK_SVG = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 13l4 4L19 7"/></svg>';
+  const X_SVG = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg>';
+
+  // "Categories" / "Hotels" / "3 categories".
+  function pickerLabel(values, emptyLabel, pluralNoun) {
+    if (values.length === 0) return emptyLabel;
+    if (values.length === 1) return values[0];
+    return values.length + " " + pluralNoun;
+  }
+
+  // The filter bar's own UI — rebuilt from filterState on every render, so
+  // what's on screen and what the panels use can never drift apart.
+  function renderFilterUI() {
+    const active = hasExploreFilters();
+    document.querySelectorAll("#filter-status-seg [data-filter-status]").forEach((b) => {
+      const on = b.dataset.filterStatus === filterState.status;
+      b.classList.toggle("active", on);
+      b.setAttribute("aria-pressed", on ? "true" : "false");
+    });
+    el("cat-trigger-label").textContent = pickerLabel(filterState.categories, "Categories", "categories");
+    el("cat-trigger").classList.toggle("has-selection", filterState.categories.length > 0);
+    renderFilterChips();
+    el("filter-active-row").hidden = !active;
+    // A funnel next to every panel that reacts, nothing next to those that
+    // don't, so the scope rule is visible without explanation.
+    document.querySelectorAll("[data-filter-badge]").forEach((b) => { b.hidden = !active; });
+    if (!el("cat-menu").hidden) renderCategoryMenu();
+  }
+
+  function renderFilterChips() {
+    const host = el("filter-chips");
+    host.innerHTML = "";
+    const chip = (label, onRemove, swatch) => {
+      const b = document.createElement("button");
+      b.type = "button";
+      b.className = "scope-chip";
+      b.setAttribute("aria-label", "Remove filter: " + label);
+      b.innerHTML = (swatch ? `<span class="chip-swatch" style="background:${swatch}"></span>` : "") + escapeHtml(label) + X_SVG;
+      b.addEventListener("click", onRemove);
+      host.appendChild(b);
+    };
+    if (filterState.status !== "all") chip(STATUS_LABELS[filterState.status], () => setFilterStatus("all"));
+    filterState.categories.forEach((cat) => chip(cat, () => toggleCategoryFilter(cat), categoryColor(cat)));
+  }
+
+  function buildFilterOption({ checked, label, swatch, count, onToggle, onOnly }) {
+    const row = document.createElement("div");
+    row.className = "filter-opt";
+    row.setAttribute("role", "checkbox");
+    row.setAttribute("aria-checked", checked ? "true" : "false");
+    row.tabIndex = 0;
+    row.innerHTML = `<span class="box">${TICK_SVG}</span>`
+      + (swatch ? `<span class="swatch" style="background:${swatch}"></span>` : "")
+      + `<span class="opt-name">${escapeHtml(label)}</span>`
+      + (count !== undefined ? `<span class="opt-count">${count}</span>` : "");
+    if (onOnly) {
+      const only = document.createElement("button");
+      only.type = "button";
+      only.className = "filter-only";
+      only.textContent = "only";
+      only.addEventListener("click", (e) => { e.stopPropagation(); onOnly(); });
+      row.appendChild(only);
+    }
+    row.addEventListener("click", onToggle);
+    row.addEventListener("keydown", (e) => {
+      if (e.key === "Enter" || e.key === " ") { e.preventDefault(); onToggle(); return; }
+      if (e.key !== "ArrowDown" && e.key !== "ArrowUp") return;
+      e.preventDefault();
+      const rows = [...row.parentElement.querySelectorAll(".filter-opt")];
+      const next = rows[rows.indexOf(row) + (e.key === "ArrowDown" ? 1 : -1)];
+      if (next) next.focus();
+    });
+    return row;
+  }
+
+  // Rebuilt every time it opens or the filter changes, so it can never show
+  // a stale checkmark. The number next to each category is how many rows
+  // it has in the current date range.
+  function renderCategoryMenu() {
+    const menu = el("cat-menu");
+    const keepScroll = menu.scrollTop;
+    menu.innerHTML = "";
+    const counts = {};
+    filteredExpenses().forEach((e) => { counts[e.category] = (counts[e.category] || 0) + 1; });
+    categoryFilterList().forEach((cat) => {
+      menu.appendChild(buildFilterOption({
+        checked: filterState.categories.includes(cat),
+        label: cat,
+        swatch: categoryColor(cat),
+        count: counts[cat] || 0,
+        onToggle: () => toggleCategoryFilter(cat),
+        onOnly: () => onlyCategoryFilter(cat),
+      }));
+    });
+    const foot = document.createElement("div");
+    foot.className = "filter-menu-foot";
+    const none = document.createElement("button");
+    none.type = "button";
+    none.className = "footer-link";
+    none.textContent = "Select none";
+    none.addEventListener("click", () => { filterState.categories = []; showAllRows = false; renderAll(); });
+    const done = document.createElement("button");
+    done.type = "button";
+    done.className = "btn btn-secondary";
+    done.style.padding = "6px 16px";
+    done.textContent = "Done";
+    done.addEventListener("click", closeFilterMenus);
+    foot.append(none, done);
+    menu.appendChild(foot);
+    menu.scrollTop = keepScroll;
+  }
+
+  function closeFilterMenus() {
+    el("cat-menu").hidden = true;
+    el("cat-trigger").setAttribute("aria-expanded", "false");
+  }
+
+  // Legend badges under the charts add/remove a category filter (they used
+  // to hide a line, invisibly to the rest of the page). With a filter on,
+  // the selected categories read as selected and the rest are dimmed.
+  function legendBadgeState(cat) {
+    if (filterState.categories.length === 0) return "";
+    return filterState.categories.includes(cat) ? " selected" : " dimmed";
+  }
+
+  function renderSummary(dateRows, exploreRows) {
+    const total = dateRows.reduce((sum, e) => sum + e.amount, 0);
+    const days = rangeDayCount(dateRows);
     el("summary-total").textContent = formatBase(total);
-    el("summary-count").textContent = `${expenses.length} expense${expenses.length === 1 ? "" : "s"}`;
+    el("summary-count").textContent = `${dateRows.length} expense${dateRows.length === 1 ? "" : "s"}`;
     el("summary-avg").textContent = `${formatBase(total / days)} / day`;
+
+    const notFinal = dateRows.filter((e) => e.notFinal);
+    const nfLine = el("summary-not-final");
+    nfLine.hidden = notFinal.length === 0;
+    if (notFinal.length) {
+      const nfTotal = notFinal.reduce((sum, e) => sum + e.amount, 0);
+      nfLine.textContent = `${formatBase(nfTotal)} not final yet (${notFinal.length})`;
+    }
+
+    // The headline follows the date only; with a filter on, the filtered
+    // subset gets its own line instead of the big number shifting.
+    const sel = el("summary-selected");
+    sel.hidden = !hasExploreFilters();
+    if (hasExploreFilters()) {
+      const selTotal = exploreRows.reduce((sum, e) => sum + e.amount, 0);
+      const pct = total ? Math.round((selTotal / total) * 100) : 0;
+      sel.textContent = `Selected: ${formatBase(selTotal)} · ${pct}%`;
+    }
   }
 
   function renderGauges(expenses) {
@@ -2717,14 +3766,26 @@ input, select, textarea, button { font-family: inherit; }
     }
   }
 
-  // dateFiltered: date-range-only, used for the by-category chart so every
-  // category with data in the current range keeps a toggleable line (Chart.js
-  // `hidden` handles show/hide). visible: date range + category filter
-  // applied, used for everything that should actually react to the filter.
-  function renderCharts(dateFiltered, visible) {
-    renderByCategoryChart(dateFiltered);
-    renderTotalChart(visible);
-    renderDonutChart(visible);
+  // All three charts draw the filtered rows. dateRows is passed to the
+  // by-category chart only for its legend, which lists every category that
+  // has data in the range — so a filtered-out category can be clicked back in.
+  function renderCharts(dateRows, exploreRows) {
+    renderByCategoryChart(exploreRows, dateRows);
+    renderTotalChart(exploreRows);
+    renderDonutChart(exploreRows);
+  }
+
+  function renderLegendBadges(container, categories) {
+    container.innerHTML = "";
+    categories.forEach((cat) => {
+      const badge = document.createElement("button");
+      badge.type = "button";
+      badge.className = "legend-badge" + legendBadgeState(cat);
+      badge.title = filterState.categories.includes(cat) ? "Click to remove this category filter" : "Click to filter by this category";
+      badge.innerHTML = `<span class="swatch" style="background:${categoryColor(cat)}"></span>${escapeHtml(cat)}`;
+      badge.addEventListener("click", () => toggleCategoryFilter(cat));
+      container.appendChild(badge);
+    });
   }
 
   // Every render* chart function below updates an existing Chart.js instance
@@ -2732,9 +3793,11 @@ input, select, textarea, button { font-family: inherit; }
   // destroying and recreating it, so category toggles / range changes /
   // filter clicks animate smoothly instead of flickering to a blank canvas.
 
-  function renderByCategoryChart(expenses) {
+  function renderByCategoryChart(expenses, dateRows) {
     const { labels, series } = bucketedTotalsByCategory(expenses);
     const categories = categoryFilterList().filter((cat) => cat in series);
+    const inRange = new Set(dateRows.map((e) => e.category));
+    renderLegendBadges(el("legend-by-category"), categoryFilterList().filter((cat) => inRange.has(cat)));
 
     const datasets = categories.map((cat) => ({
       label: cat,
@@ -2745,7 +3808,6 @@ input, select, textarea, button { font-family: inherit; }
       pointRadius: 0,
       pointHoverRadius: 4,
       tension: 0.25,
-      hidden: categoryVisibility[cat] === false,
     }));
 
     if (charts.byCategory) {
@@ -2907,14 +3969,14 @@ input, select, textarea, button { font-family: inherit; }
       const pct = grandTotal ? ((value / grandTotal) * 100).toFixed(1) : "0.0";
       const row = document.createElement("button");
       row.type = "button";
-      row.className = "legend-badge donut-legend-pill" + (categoryVisibility[cat] !== false ? "" : " disabled");
-      row.title = "Click to toggle · double-click to show only this category";
+      row.className = "legend-badge donut-legend-pill" + legendBadgeState(cat);
+      row.title = filterState.categories.includes(cat) ? "Click to remove this category filter" : "Click to filter by this category";
       row.innerHTML = `
         <span class="swatch" style="background:${categoryColor(cat)}"></span>
         <span class="donut-legend-label">${escapeHtml(cat)}</span>
         <span class="donut-legend-value tabular-nums">${formatBase(value)}<span class="donut-legend-pct"> · ${pct}%</span></span>
       `;
-      attachCategoryToggle(row, cat);
+      row.addEventListener("click", () => toggleCategoryFilter(cat));
       legendEl.appendChild(row);
     });
 
@@ -2926,7 +3988,7 @@ input, select, textarea, button { font-family: inherit; }
       row.title = rest.join(", ");
       row.innerHTML = `
         <span class="swatch" style="background:var(--text-muted)"></span>
-        <span class="donut-legend-label">Other (${rest.length})</span>
+        <span class="donut-legend-label">${rest.length} more</span>
         <span class="donut-legend-value tabular-nums">${formatBase(restTotal)}<span class="donut-legend-pct"> · ${pct}%</span></span>
       `;
       legendEl.appendChild(row);
@@ -2962,21 +4024,130 @@ input, select, textarea, button { font-family: inherit; }
     return String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
   }
 
-  function renderTable(expenses) {
+  function matchesSearch(e, q) {
+    return [
+      e.notes, e.category, e.rawCategory, e.date, friendlyDate(e.date),
+      String(e.amount), formatBase(e.amount), e.notFinal ? "not final" : "final",
+    ].some((f) => String(f || "").toLowerCase().includes(q));
+  }
+
+  // Ties always fall back to newest date, then most recently added row, so
+  // the order never jumps around between renders.
+  function compareExpenses(a, b) {
+    const dir = sortState.dir === "asc" ? 1 : -1;
+    let primary = 0;
+    if (sortState.key === "amount") primary = a.amount - b.amount;
+    else if (sortState.key === "category") primary = a.category.localeCompare(b.category);
+    else if (sortState.key === "status") primary = (a.notFinal ? 1 : 0) - (b.notFinal ? 1 : 0);
+    else primary = a.date < b.date ? -1 : a.date > b.date ? 1 : a.sheetRow - b.sheetRow;
+    if (primary !== 0) return primary * dir;
+    if (a.date !== b.date) return a.date < b.date ? 1 : -1;
+    return b.sheetRow - a.sheetRow;
+  }
+
+  const DEFAULT_SORT_DIR = { date: "desc", amount: "desc", status: "desc", category: "asc" };
+
+  function setSort(key, dir) {
+    sortState = { key, dir: dir || DEFAULT_SORT_DIR[key] };
+    renderAll();
+  }
+
+  function renderSortUI() {
+    el("table-sort-select").value = `${sortState.key}:${sortState.dir}`;
+    document.querySelectorAll(".expense-table th[data-sort-col]").forEach((th) => {
+      const on = th.dataset.sortCol === sortState.key;
+      if (on) th.setAttribute("aria-sort", sortState.dir === "asc" ? "ascending" : "descending");
+      else th.removeAttribute("aria-sort");
+      th.querySelector(".sort-arrow").textContent = on ? (sortState.dir === "asc" ? "▲" : "▼") : "▲";
+    });
+  }
+
+  const EDIT_SVG = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4z"/></svg>';
+  const TRASH_SVG = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 6h18M8 6V4h8v2M19 6l-1 14H6L5 6"/></svg>';
+
+  function isPhoneLayout() {
+    return window.matchMedia("(max-width: 640px)").matches;
+  }
+
+  // The expense list switches to cards (no edit/delete icons) below this
+  // width — must match the CSS "Expense list as cards" media query.
+  const CARD_TABLE_QUERY = "(max-width: 820px)";
+  function isCardTable() {
+    return window.matchMedia(CARD_TABLE_QUERY).matches;
+  }
+
+  function renderTable(expenses, hasRowsInRange) {
+    renderSortUI();
     const body = el("expense-table-body");
     body.innerHTML = "";
-    const sorted = [...expenses].sort((a, b) => (a.date < b.date ? 1 : a.date > b.date ? -1 : 0));
-    for (const e of sorted) {
+    const q = searchQuery.trim().toLowerCase();
+    const rows = (q ? expenses.filter((e) => matchesSearch(e, q)) : expenses.slice()).sort(compareExpenses);
+
+    const emptyEl = el("table-empty");
+    if (rows.length === 0) {
+      el("table-empty-text").textContent = q ? "No expenses match your search."
+        : hasRowsInRange ? "Nothing matches these filters."
+        : allExpenses.length ? "No expenses in this date range." : "No expenses yet — add your first one.";
+      el("table-empty-clear").hidden = !(hasExploreFilters() && hasRowsInRange && !q);
+      emptyEl.hidden = false;
+      el("table-wrap").hidden = true;
+      el("show-all-btn").hidden = true;
+      return;
+    }
+    emptyEl.hidden = true;
+    el("table-wrap").hidden = false;
+
+    const hasMore = rows.length > TABLE_ROW_LIMIT;
+    const visible = showAllRows || !hasMore ? rows : rows.slice(0, TABLE_ROW_LIMIT);
+    const showAllBtn = el("show-all-btn");
+    showAllBtn.hidden = !hasMore;
+    if (hasMore) showAllBtn.textContent = showAllRows ? "Show fewer" : `Show all ${rows.length} expenses`;
+
+    for (const e of visible) {
       const tr = document.createElement("tr");
-      if (window.__newlyAddedRowKey === rowKey(e)) {
-        tr.classList.add("row-new");
-      }
+      if (newlyChangedKeys.has(rowKey(e))) tr.classList.add("row-new");
       tr.innerHTML = `
-        <td>${escapeHtml(e.date)}</td>
-        <td class="amount-col tabular-nums">${formatBase(e.amount)}</td>
-        <td>${escapeHtml(e.category)}</td>
-        <td class="notes-col" dir="auto">${escapeHtml(e.notes)}</td>
+        <td class="col-date">${escapeHtml(friendlyDate(e.date))}</td>
+        <td class="col-amount amount-col tabular-nums">${formatBase(e.amount)}</td>
+        <td class="col-status"></td>
+        <td class="col-category"><span class="swatch" style="background:${categoryColor(e.category)}"></span>${escapeHtml(e.category || "—")}</td>
+        <td class="col-notes notes-col" dir="auto">${escapeHtml(e.notes)}</td>
+        <td class="row-actions"></td>
       `;
+
+      const statusTd = tr.querySelector(".col-status");
+      if (e.notFinal) {
+        const badge = document.createElement("button");
+        badge.type = "button";
+        badge.className = "status-badge";
+        badge.textContent = "Not final";
+        badge.title = "Amount not final yet — click to mark it as final";
+        badge.addEventListener("click", (evt) => { evt.stopPropagation(); markExpenseFinal(e, badge); });
+        statusTd.appendChild(badge);
+      } else {
+        statusTd.innerHTML = '<span class="status-final">Final</span>';
+      }
+
+      const actionsTd = tr.querySelector(".row-actions");
+      const editBtn = document.createElement("button");
+      editBtn.type = "button";
+      editBtn.className = "icon-btn";
+      editBtn.title = "Edit this expense";
+      editBtn.setAttribute("aria-label", "Edit this expense");
+      editBtn.innerHTML = EDIT_SVG;
+      editBtn.addEventListener("click", (evt) => { evt.stopPropagation(); openEditExpenseModal(e); });
+      const delBtn = document.createElement("button");
+      delBtn.type = "button";
+      delBtn.className = "icon-btn danger";
+      delBtn.title = "Delete this expense";
+      delBtn.setAttribute("aria-label", "Delete this expense");
+      delBtn.innerHTML = TRASH_SVG;
+      delBtn.addEventListener("click", (evt) => { evt.stopPropagation(); openDeleteConfirm(e); });
+      actionsTd.append(editBtn, delBtn);
+
+      // On a phone/tablet the row is a card with no icon column — tapping it
+      // opens the edit form (which has Delete).
+      tr.addEventListener("click", () => { if (isCardTable()) openEditExpenseModal(e); });
       body.appendChild(tr);
     }
   }
@@ -2985,8 +4156,25 @@ input, select, textarea, button { font-family: inherit; }
 
   // ---- Modal plumbing ----
 
-  function openModal(id) { el(id).hidden = false; }
-  function closeModal(id) { el(id).hidden = true; }
+  // body.modal-open stops the page behind a dialog from scrolling (on a
+  // phone the page used to scroll under the open form).
+  function syncModalOpenClass() {
+    const anyOpen = Array.from(document.querySelectorAll(".modal-overlay")).some((m) => !m.hidden);
+    document.body.classList.toggle("modal-open", anyOpen);
+  }
+  function openModal(id) { el(id).hidden = false; syncModalOpenClass(); }
+  function closeModal(id) { el(id).hidden = true; syncModalOpenClass(); }
+
+  let toastTimer = null;
+  function showToast(message, opts) {
+    opts = opts || {};
+    const t = el("toast");
+    t.textContent = message;
+    t.classList.toggle("error", !!opts.error);
+    t.hidden = false;
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(() => { t.hidden = true; }, opts.error ? 7000 : 3000);
+  }
 
   // ---- Connection banner — a small persistent bar (not a blocking modal)
   // used for two distinct situations: a silent token refresh failed
@@ -3098,9 +4286,12 @@ input, select, textarea, button { font-family: inherit; }
     document.querySelectorAll("[data-close-modal]").forEach((btn) => {
       btn.addEventListener("click", () => closeModal(btn.dataset.closeModal));
     });
+    // A tap outside closes an info dialog, but never a form you're typing
+    // into (data-no-overlay-close) — on a phone that tap is easy to make by
+    // accident and silently threw the half-entered expense away.
     document.querySelectorAll(".modal-overlay").forEach((overlay) => {
       overlay.addEventListener("click", (evt) => {
-        if (evt.target === overlay) overlay.hidden = true;
+        if (evt.target === overlay && !overlay.hasAttribute("data-no-overlay-close")) closeModal(overlay.id);
       });
     });
 
@@ -3134,6 +4325,7 @@ input, select, textarea, button { font-family: inherit; }
         btn.classList.add("active");
         currentRangeKey = btn.dataset.range;
         el("custom-range-fields").classList.toggle("visible", currentRangeKey === "custom");
+        showAllRows = false;
         renderAll();
       });
     });
@@ -3141,17 +4333,78 @@ input, select, textarea, button { font-family: inherit; }
     el("custom-from").addEventListener("change", () => { if (currentRangeKey === "custom") renderAll(); });
     el("custom-to").addEventListener("change", () => { if (currentRangeKey === "custom") renderAll(); });
 
-    // Add expense
-    el("add-expense-btn").addEventListener("click", openAddExpenseModal);
-    el("expense-currency").addEventListener("change", updateConversionLine);
-    el("expense-amount").addEventListener("input", updateConversionLine);
-    el("save-expense-btn").addEventListener("click", onSaveExpense);
-
-    el("divide-toggle-btn").addEventListener("click", () => {
-      el("divide-panel").classList.toggle("visible");
+    // Filter bar: status segment, category popover, chips' Clear
+    document.querySelectorAll("#filter-status-seg [data-filter-status]").forEach((btn) => {
+      btn.addEventListener("click", () => setFilterStatus(btn.dataset.filterStatus));
     });
-    el("divide-total").addEventListener("input", updateDivideResult);
-    el("divide-by").addEventListener("input", updateDivideResult);
+    el("cat-trigger").addEventListener("click", (evt) => {
+      evt.stopPropagation();
+      const wasOpen = !el("cat-menu").hidden;
+      closeFilterMenus();
+      if (!wasOpen) {
+        renderCategoryMenu();
+        el("cat-menu").hidden = false;
+        el("cat-trigger").setAttribute("aria-expanded", "true");
+        if (!isPhoneLayout()) {
+          const first = el("cat-menu").querySelector(".filter-opt");
+          if (first) first.focus();
+        }
+      }
+    });
+    el("cat-menu").addEventListener("click", (evt) => evt.stopPropagation());
+    document.addEventListener("click", closeFilterMenus);
+    document.addEventListener("keydown", (evt) => { if (evt.key === "Escape") closeFilterMenus(); });
+    el("clear-filters-btn").addEventListener("click", clearExploreFilters);
+    el("table-empty-clear").addEventListener("click", clearExploreFilters);
+
+    // Table: search, sort (select + clickable headers), show all
+    el("expense-search").addEventListener("input", (evt) => {
+      searchQuery = evt.target.value;
+      el("expense-search-clear").hidden = searchQuery === "";
+      showAllRows = false;
+      renderTable(filteredExpenses().filter(matchesExplore), filteredExpenses().length > 0);
+    });
+    el("expense-search-clear").addEventListener("click", () => {
+      el("expense-search").value = "";
+      searchQuery = "";
+      el("expense-search-clear").hidden = true;
+      renderAll();
+      el("expense-search").focus();
+    });
+    el("table-sort-select").addEventListener("change", (evt) => {
+      const [key, dir] = evt.target.value.split(":");
+      setSort(key, dir);
+    });
+    document.querySelectorAll(".th-sort").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        const key = btn.dataset.sort;
+        if (sortState.key === key) setSort(key, sortState.dir === "asc" ? "desc" : "asc");
+        else setSort(key);
+      });
+    });
+    el("show-all-btn").addEventListener("click", () => { showAllRows = !showAllRows; renderAll(); });
+
+    // Add / edit expense
+    attachDatePicker("split-end");
+    el("add-expense-btn").addEventListener("click", openAddExpenseModal);
+    el("expense-currency").addEventListener("change", () => { updateConversionLine(); updateSplitPreview(); });
+    el("expense-amount").addEventListener("input", () => { updateConversionLine(); updateSplitPreview(); });
+    el("expense-date").addEventListener("change", updateSplitPreview);
+    el("expense-notes").addEventListener("input", updateSplitPreview);
+    el("save-expense-btn").addEventListener("click", onSaveExpense);
+    el("delete-expense-btn").addEventListener("click", () => {
+      if (editingExpense) openDeleteConfirm(editingExpense);
+    });
+
+    el("split-enabled").addEventListener("change", syncSplitUI);
+    document.querySelectorAll("[data-split-mode]").forEach((btn) => {
+      btn.addEventListener("click", () => { splitMode = btn.dataset.splitMode; syncSplitUI(); });
+    });
+    el("split-days").addEventListener("input", updateSplitPreview);
+    el("split-end").addEventListener("change", updateSplitPreview);
+
+    // Delete confirmation
+    el("confirm-ok-btn").addEventListener("click", onConfirmDelete);
 
     // Rate history
     el("rate-history-link").addEventListener("click", async () => {
@@ -3249,20 +4502,143 @@ input, select, textarea, button { font-family: inherit; }
     }
   }
 
-  function openAddExpenseModal() {
-    el("expense-date").value = todayISO();
-    el("expense-category").value = appConfig.categories[0];
+  // A category not in the configured list (a removed one such as
+  // "Category MAI", or one typed into the sheet by hand) still has to show
+  // in the dropdown when editing that row, or saving would silently swap it
+  // for whatever the first option is.
+  function ensureSelectOption(selectEl, value) {
+    if (!value || Array.from(selectEl.options).some((o) => o.value === value)) return;
+    const opt = document.createElement("option");
+    opt.value = value;
+    opt.textContent = value;
+    selectEl.appendChild(opt);
+  }
+
+  function resetExpenseForm() {
+    populateCategorySelect(); // drops any one-off option an earlier edit injected
     el("expense-currency").value = activeTripCurrency;
     el("expense-amount").value = "";
     el("expense-notes").value = "";
-    el("divide-panel").classList.remove("visible");
-    el("divide-total").value = "";
-    el("divide-by").value = "";
-    el("divide-result").textContent = "—";
+    el("expense-not-final").checked = true; // default: not final until confirmed
+    el("split-enabled").checked = false;
+    el("split-days").value = "";
+    el("split-end").value = "";
+    splitMode = "days";
     el("expense-error").classList.remove("visible");
+  }
+
+  function openAddExpenseModal() {
+    editingExpense = null;
+    resetExpenseForm();
+    el("expense-modal-title").textContent = "Add expense";
+    el("expense-date").value = todayISO();
+    el("expense-category").value = appConfig.categories[0];
+    el("split-section").hidden = false;
+    el("delete-expense-btn").hidden = true;
+    syncSplitUI();
     updateConversionLine();
     openModal("add-expense-modal");
-    el("expense-amount").focus();
+    if (!isPhoneLayout()) el("expense-amount").focus(); // on a phone, don't throw the keyboard over the form
+  }
+
+  function openEditExpenseModal(expense) {
+    editingExpense = expense;
+    resetExpenseForm();
+    el("expense-modal-title").textContent = "Edit expense";
+    // A hand-typed non-date value can't be shown in the picker — leave it
+    // blank so Save asks for a real date instead of guessing one.
+    el("expense-date").value = isISODate(expense.date) ? expense.date : "";
+    ensureSelectOption(el("expense-category"), expense.category);
+    el("expense-category").value = expense.category;
+    el("expense-amount").value = String(expense.amount);
+    el("expense-notes").value = expense.notes;
+    el("expense-not-final").checked = !!expense.notFinal;
+    el("split-section").hidden = true; // one existing record can't be split
+    el("delete-expense-btn").hidden = false;
+    syncSplitUI();
+    updateConversionLine();
+    openModal("add-expense-modal");
+  }
+
+  function syncSplitUI() {
+    const on = el("split-enabled").checked && !editingExpense;
+    el("split-panel").hidden = !on;
+    document.querySelectorAll("[data-split-mode]").forEach((b) => {
+      const active = b.dataset.splitMode === splitMode;
+      b.classList.toggle("active", active);
+      b.setAttribute("aria-pressed", active ? "true" : "false");
+    });
+    el("split-days-field").hidden = splitMode !== "days";
+    el("split-end-field").hidden = splitMode !== "end";
+    el("expense-date-label").textContent = on ? "Start date" : "Date";
+    el("expense-amount-label").textContent = on ? "Total amount" : "Amount";
+    updateSplitPreview();
+  }
+
+  // The amount as it will be stored: converted into the trip's currency and
+  // rounded to cents. null if the field isn't a usable number.
+  function amountInTripCurrency() {
+    const amount = parseFloat(el("expense-amount").value);
+    if (!isFinite(amount)) return null;
+    return round2(convert(amount, el("expense-currency").value, activeTripCurrency));
+  }
+
+  // One payment covering several days -> one record per day. Works in whole
+  // cents so the parts always add up to exactly the total: the leftover
+  // cents from an uneven division go one each to the first days.
+  // Returns { parts } or { error }.
+  function computeSplit() {
+    const start = el("expense-date").value;
+    if (!isISODate(start)) return { error: "Pick a start date." };
+    let days;
+    if (splitMode === "days") {
+      const raw = el("split-days").value.trim();
+      if (raw === "") return { error: "Enter the number of days." };
+      days = Number(raw);
+      if (!Number.isInteger(days)) return { error: "Number of days must be a whole number." };
+    } else {
+      const end = el("split-end").value;
+      if (!isISODate(end)) return { error: "Pick the end date." };
+      if (end < start) return { error: "The end date is before the start date." };
+      days = daysInclusive(start, end);
+    }
+    if (days < 2) return { error: "A split needs at least 2 days." };
+    if (days > 366) return { error: "A split can cover at most 366 days." };
+
+    const total = amountInTripCurrency();
+    if (total === null || !(total > 0)) return { error: "Enter the total amount." };
+    const totalCents = Math.round(total * 100);
+    // Every day must get at least 1 cent — otherwise some records would be
+    // saved with an amount of 0.
+    if (totalCents < days) return { error: `The total is too small to split over ${days} days.` };
+    const baseCents = Math.floor(totalCents / days);
+    const extra = totalCents - baseCents * days;
+    const parts = [];
+    for (let i = 0; i < days; i++) {
+      parts.push({ date: addDaysISO(start, i), amount: (baseCents + (i < extra ? 1 : 0)) / 100 });
+    }
+    return { parts, total };
+  }
+
+  function splitNote(notes, i, n) {
+    return notes ? `${notes} (${i}/${n})` : `Split ${i}/${n}`;
+  }
+
+  function updateSplitPreview() {
+    const preview = el("split-preview");
+    if (el("split-panel").hidden) { preview.textContent = ""; return; }
+    const result = computeSplit();
+    preview.classList.toggle("error", !!result.error);
+    if (result.error) { preview.textContent = result.error; return; }
+    const { parts, total } = result;
+    const n = parts.length;
+    const first = parts[0], last = parts[n - 1];
+    const amounts = Array.from(new Set(parts.map((p) => p.amount)));
+    const perDay = amounts.length === 1
+      ? `${formatBase(amounts[0])} each`
+      : `${formatBase(amounts[1])}–${formatBase(amounts[0])} each`;
+    preview.innerHTML = `Will save <strong>${n} records</strong> · ${escapeHtml(perDay)}<br>`
+      + `<span class="muted">${escapeHtml(shortDate(first.date))} → ${escapeHtml(friendlyDate(last.date))} · total ${escapeHtml(formatBase(total))}</span>`;
   }
 
   function updateConversionLine() {
@@ -3279,18 +4655,33 @@ input, select, textarea, button { font-family: inherit; }
     line.textContent = `${currencySymbol(currency)}${amount.toFixed(2)} → ${formatBase(converted)} (rate ${effectiveRate.toFixed(4)})`;
   }
 
-  function updateDivideResult() {
-    const total = parseFloat(el("divide-total").value);
-    const by = parseFloat(el("divide-by").value);
-    const resultEl = el("divide-result");
-    if (isNaN(total) || isNaN(by) || by <= 0) {
-      resultEl.textContent = "—";
-      return;
+  async function reloadExpenses() {
+    allExpenses = (await getExpenses(activeTrip)).expenses;
+    renderAll();
+  }
+
+  // Runs AFTER a write has already succeeded. If re-reading the list then
+  // fails (e.g. the session expired in between), that must not surface as
+  // "your save failed" — the data is in the sheet; only the view is stale.
+  async function reloadAfterWrite(successMessage) {
+    try {
+      await reloadExpenses();
+      if (successMessage) showToast(successMessage);
+    } catch (err) {
+      showToast(`${successMessage || "Saved."} The list couldn't refresh right now — it will update after you reconnect or reload the page.`, { error: true });
     }
-    const result = total / by;
-    resultEl.textContent = result.toFixed(2);
-    el("expense-amount").value = result.toFixed(2);
-    updateConversionLine();
+  }
+
+  function flashRows(keys) {
+    newlyChangedKeys = new Set(keys);
+    setTimeout(() => { newlyChangedKeys = new Set(); }, 1600);
+  }
+
+  // Another tab/device changed the row first: nothing was written, so show
+  // the current state and say so, rather than retrying blindly.
+  async function handleStaleRow(err, errorEl) {
+    showError(errorEl, err.message);
+    try { await reloadExpenses(); } catch (e) { /* the message above already stands */ }
   }
 
   async function onSaveExpense() {
@@ -3299,35 +4690,129 @@ input, select, textarea, button { font-family: inherit; }
 
     const date = el("expense-date").value;
     const category = el("expense-category").value;
-    const currency = el("expense-currency").value;
-    const amount = parseFloat(el("expense-amount").value);
     const notes = el("expense-notes").value.trim();
+    const notFinal = el("expense-not-final").checked;
+    const amount = parseFloat(el("expense-amount").value);
+    const splitting = !editingExpense && el("split-enabled").checked;
 
-    if (!date) { return showError(errorEl, "Date is required."); }
-    if (!(amount > 0)) { return showError(errorEl, "Amount must be greater than 0."); }
+    if (!isISODate(date)) { return showError(errorEl, splitting ? "Start date is required." : "Date is required."); }
+    // New expenses must be positive (as before). An edit only has to be a
+    // real non-zero number, so an existing negative row (a refund, a
+    // correction) can still be opened and saved.
+    if (editingExpense ? !(isFinite(amount) && amount !== 0) : !(amount > 0)) {
+      return showError(errorEl, editingExpense ? "Amount must be a number other than 0." : "Amount must be greater than 0.");
+    }
+    const amountBase = amountInTripCurrency();
 
-    const amountBase = Math.round(convert(amount, currency, activeTripCurrency) * 100) / 100;
+    let rows;
+    if (splitting) {
+      const split = computeSplit();
+      if (split.error) return showError(errorEl, split.error);
+      rows = split.parts.map((p, i) => ({
+        date: p.date, amount: p.amount, category,
+        notes: splitNote(notes, i + 1, split.parts.length), notFinal,
+      }));
+    } else if (editingExpense) {
+      // Category left as shown -> keep exactly what's in the cell. An old
+      // name ("Meals") is displayed under its new one, and must not be
+      // rewritten just because the row was opened and saved; only actually
+      // picking a different category writes one.
+      const keptCategory = category === editingExpense.category ? editingExpense.rawCategory : category;
+      rows = [{ date, amount: amountBase, category: keptCategory, notes, notFinal }];
+    } else {
+      rows = [{ date, amount: amountBase, category, notes, notFinal }];
+    }
 
     const btn = el("save-expense-btn");
     btn.disabled = true;
+    el("delete-expense-btn").disabled = true;
     el("expense-saving-indicator").classList.add("visible");
     try {
-      await withRetry(() => postExpense(activeTrip, { date, amount_base: amountBase, category, notes }), [2000, 6000]);
-      window.__newlyAddedRowKey = rowKey({ date, amount: amountBase, category, notes });
+      if (editingExpense) {
+        // No automatic retry here: an edit locates its row by content, so a
+        // retry after a write that landed but whose reply was lost would
+        // report "changed elsewhere". One attempt; the form stays open on
+        // failure with everything typed intact.
+        await updateExpense(activeTrip, editingExpense, rows[0]);
+      } else {
+        // A few backed-off retries absorb a network blip or a Sheets 5xx;
+        // all of a split's rows go in one request, so they land together.
+        await withRetry(() => postExpenses(activeTrip, rows), [2000, 6000]);
+      }
+      flashRows(rows.map((r) => rowKey({ ...r, category: canonicalCategory(r.category) })));
       closeModal("add-expense-modal");
-      allExpenses = (await getExpenses(activeTrip)).expenses;
-      renderAll();
-      setTimeout(() => { window.__newlyAddedRowKey = null; }, 1600);
+      const wasEdit = !!editingExpense;
+      editingExpense = null;
+      await reloadAfterWrite(splitting ? `Saved ${rows.length} records.` : wasEdit ? "Changes saved." : null);
     } catch (err) {
       // Modal stays open with every typed field intact — the expense the
       // user entered is never silently discarded, per this repo's
       // data-loss-critical standard for apps that are the sole copy of
       // real trip data.
-      showError(errorEl, err.message);
+      if (err.staleRow) await handleStaleRow(err, errorEl);
+      else showError(errorEl, err.message);
     } finally {
       btn.disabled = false;
+      el("delete-expense-btn").disabled = false;
       el("expense-saving-indicator").classList.remove("visible");
     }
+  }
+
+  // ---- Delete (with confirmation) ----
+
+  let pendingDelete = null;
+
+  function openDeleteConfirm(expense) {
+    pendingDelete = expense;
+    el("confirm-body").textContent = [
+      friendlyDate(expense.date), expense.category || "—", formatBase(expense.amount), expense.notes,
+    ].filter(Boolean).join(" · ");
+    el("confirm-error").classList.remove("visible");
+    openModal("confirm-modal");
+  }
+
+  async function onConfirmDelete() {
+    if (!pendingDelete) return;
+    const expense = pendingDelete;
+    const btn = el("confirm-ok-btn");
+    const errorEl = el("confirm-error");
+    errorEl.classList.remove("visible");
+    btn.disabled = true;
+    el("confirm-saving-indicator").classList.add("visible");
+    try {
+      await deleteExpense(activeTrip, expense);
+      pendingDelete = null;
+      closeModal("confirm-modal");
+      if (editingExpense === expense) {
+        editingExpense = null;
+        closeModal("add-expense-modal");
+      }
+      await reloadAfterWrite("Expense deleted. A copy is in the _ChangeLog tab.");
+    } catch (err) {
+      if (err.staleRow) await handleStaleRow(err, errorEl);
+      else showError(errorEl, err.message);
+    } finally {
+      btn.disabled = false;
+      el("confirm-saving-indicator").classList.remove("visible");
+    }
+  }
+
+  // One tap on a "Not final" badge: same edit path as the form, changing
+  // only the flag.
+  async function markExpenseFinal(expense, badge) {
+    badge.disabled = true;
+    badge.textContent = "Saving…";
+    try {
+      await updateExpense(activeTrip, expense, { notFinal: false });
+    } catch (err) {
+      showToast(err.message, { error: true });
+      badge.disabled = false;          // in case the reload below fails too
+      badge.textContent = "Not final";
+      try { await reloadExpenses(); } catch (e) { /* toast already shown */ }
+      return;
+    }
+    flashRows([rowKey(expense)]);
+    await reloadAfterWrite("Marked as final.");
   }
 
   function showError(errorEl, message) {
